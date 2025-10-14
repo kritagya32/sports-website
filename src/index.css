@@ -1,0 +1,842 @@
+/* index.css
+   Forest-themed professional UI for Chamba Sports Registration Portal
+   Replace your current index.css with this file.
+*/
+
+/* =========================
+   Variables / Base
+   ========================= */
+:root {
+    --bg-1: #eef6ec; /* soft forest sky */
+    --bg-2: #f6f7f2; /* card backdrop */
+    --surface: #ffffff; /* card background */
+    --text: #12311e; /* deep forest text */
+    --muted: #7a8378; /* muted text */
+    --accent: #2e7d32; /* primary forest green */
+    --accent-2: #14532d; /* darker forest green */
+    --accent-soft: #dff3e6; /* highlight */
+    --wood: #8b5a2b; /* warm wood accent */
+    --danger: #c62828;
+    --radius-lg: 12px;
+    --radius-md: 8px;
+    --radius-sm: 6px;
+    --shadow-soft: 0 8px 24px rgba(16,30,16,0.06);
+    --container-md: 1150px;
+    --container-pad: 20px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace;
+    font-size: 16px;
+}
+
+/* =========================
+   Global
+   ========================= */
+* {
+    box-sizing: border-box;
+}
+
+html, body, #root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    color: var(--text);
+    background: linear-gradient(180deg, var(--bg-1), var(--bg-2));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.45;
+    padding: 18px;
+}
+
+/* central container */
+.app-root {
+    max-width: var(--container-md);
+    margin: 12px auto;
+    padding: var(--container-pad);
+    position: relative;
+    z-index: 2;
+}
+
+/* subtle patterned overlay (very faint) */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(rgba(34,77,39,0.015) 0.5px, transparent 0.5px);
+    background-size: 16px 16px;
+    opacity: 0.9;
+    mix-blend-mode: multiply;
+    z-index: 0;
+}
+
+/* =========================
+   Header / Brand
+   ========================= */
+.app-header, .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 18px;
+    background: linear-gradient(90deg, rgba(46,125,50,0.06), rgba(20,83,45,0.02));
+    padding: 14px 18px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-soft);
+    border: 1px solid rgba(18,36,22,0.04);
+    margin-bottom: 18px;
+}
+
+.brand {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+}
+
+.brand-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    color: white;
+    background: linear-gradient(180deg, var(--accent), var(--accent-2));
+    box-shadow: 0 8px 18px rgba(18,45,22,0.12);
+    font-weight: 700;
+    font-size: 20px;
+}
+
+.app-header h1, .header h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--accent-2);
+    letter-spacing: -0.2px;
+}
+
+.brand-right .user-info {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* =========================
+   Cards & Layout
+   ========================= */
+.panel, .card {
+    background: var(--surface);
+    padding: 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(20,30,20,0.04);
+    box-shadow: 0 10px 24px rgba(18,34,20,0.03);
+}
+
+.grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 16px;
+    align-items: start;
+}
+
+.grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+    .grid-3 .card {
+        padding: 12px;
+    }
+
+@media (max-width: 980px) {
+    .grid-2, .grid-3 {
+        grid-template-columns: 1fr;
+    }
+
+    .app-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+    }
+}
+
+/* =========================
+   Buttons (bigger, accessible)
+   ========================= */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid rgba(20,30,20,0.06);
+    background: white;
+    color: var(--text);
+    transition: transform .08s ease, box-shadow .12s ease;
+    min-height: 42px;
+    min-width: 84px;
+}
+
+    .btn:active {
+        transform: translateY(1px);
+    }
+
+    .btn.small {
+        padding: 6px 10px;
+        min-height: 34px;
+        min-width: auto;
+        font-weight: 600;
+    }
+
+    .btn.primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-2));
+        color: #fff;
+        border: 1px solid rgba(8,40,12,0.12);
+        box-shadow: 0 8px 24px rgba(22,75,30,0.12);
+    }
+
+        .btn.primary:hover {
+            transform: translateY(-2px);
+        }
+
+    .btn.ghost {
+        background: transparent;
+        border: 1px dashed rgba(18,40,22,0.06);
+        color: var(--accent-2);
+    }
+
+    .btn.warn {
+        background: var(--danger);
+        color: white;
+    }
+
+/* =========================
+   Forms
+   ========================= */
+label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 700;
+    color: var(--accent-2);
+}
+
+input[type="text"], input[type="number"], input[type="password"], select, textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid #e6ece3;
+    background: #fff;
+    font-size: 0.96rem;
+    color: var(--text);
+    transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+    input:focus, select:focus, textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 8px 18px rgba(46,125,50,0.08);
+        outline: none;
+    }
+
+/* Required field star */
+.required {
+    color: var(--danger);
+    margin-left: 4px;
+    font-weight: 800;
+}
+
+/* small helper text */
+.muted {
+    color: var(--muted);
+    font-size: 0.88rem;
+}
+
+.small {
+    font-size: 0.88rem;
+    color: var(--muted);
+}
+
+.info-text {
+    margin-top: 10px;
+    color: var(--accent-2);
+    font-weight: 700;
+}
+
+/* =========================
+   Participant Cards
+   ========================= */
+.participant-card {
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: linear-gradient(180deg, rgba(245,250,243,0.9), rgba(255,255,255,0.95));
+    border: 1px solid rgba(20,30,20,0.04);
+    display: block;
+}
+
+.participant-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.photo-thumb {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.06);
+    box-shadow: 0 6px 14px rgba(10,20,10,0.06);
+}
+
+/* grid helpers used in App.jsx */
+.grid-3 {
+    gap: 12px;
+}
+
+.grid-2-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+/* =========================
+   Table styles (clean, readable)
+   ========================= */
+.table-scroll {
+    max-height: 420px;
+    overflow: auto;
+    border-radius: 8px;
+    margin-top: 8px;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+    background: transparent;
+}
+
+    .data-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: rgba(250,251,249,0.96);
+        padding: 10px;
+        text-align: left;
+        font-weight: 700;
+        color: var(--accent-2);
+        border-bottom: 1px solid rgba(16,24,18,0.04);
+    }
+
+    .data-table tbody td {
+        padding: 10px;
+        border-bottom: 1px dashed rgba(18,30,18,0.03);
+        vertical-align: middle;
+    }
+
+    .data-table tbody tr:hover {
+        background: rgba(46,125,50,0.03);
+    }
+
+/* Deleted row */
+.row-deleted {
+    opacity: 0.6;
+    text-decoration: line-through;
+    background: linear-gradient(90deg, rgba(220,220,220,0.02), rgba(255,255,255,0.01));
+}
+
+/* =========================
+   Progress bar
+   ========================= */
+.progress-wrap {
+    margin-top: 10px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 10px;
+    background: linear-gradient(90deg, rgba(14,22,12,0.04), rgba(14,22,12,0.02));
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid rgba(18,30,18,0.03);
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    width: 0%;
+    transition: width .35s ease;
+}
+
+/* =========================
+   Status badges & small utils
+   ========================= */
+.badge {
+    display: inline-block;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.85rem;
+}
+
+    .badge.active {
+        background: var(--accent-soft);
+        color: var(--accent-2);
+    }
+
+    .badge.requested {
+        background: #fff4e6;
+        color: #8a4b2b;
+        border: 1px solid rgba(160,120,80,0.06);
+    }
+
+    .badge.deleted {
+        background: #f6e9e9;
+        color: var(--danger);
+    }
+
+/* =========================
+   Footer & misc
+   ========================= */
+.app-footer {
+    margin-top: 18px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+/* small monospace inline (for script URL display) */
+.mono {
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    color: var(--muted);
+    background: rgba(255,255,255,0.6);
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+/* =========================
+   Responsive tweaks
+   ========================= */
+@media (max-width: 980px) {
+    .grid-2 {
+        grid-template-columns: 1fr;
+    }
+
+    .brand-icon {
+        width: 48px;
+        height: 48px;
+        font-size: 18px;
+    }
+
+    .photo-thumb {
+        width: 60px;
+        height: 60px;
+    }
+}
+
+@media (max-width: 520px) {
+    .btn {
+        width: 100%;
+        display: block;
+    }
+
+    .grid-3 {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* =========================
+   Accessibility / Focus
+   ========================= */
+button:focus, input:focus, select:focus, textarea:focus {
+    outline: 3px solid rgba(46,125,50,0.12);
+    outline-offset: 2px;
+    box-shadow: 0 8px 18px rgba(46,125,50,0.06);
+}
+
+/* =========================
+   Quick helpers for consistency
+   ========================= */
+.row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+    .row.gap {
+        gap: 12px;
+    }
+
+.strong {
+    font-weight: 800;
+    color: var(--accent-2);
+}
+
+/* =========================
+   File input hint styling
+   ========================= */
+.file-hint {
+    color: var(--muted);
+    font-size: 0.88rem;
+    margin-top: 6px;
+    display: block;
+}
+
+/* =========================
+   Small print & notes
+   ========================= */
+.note {
+    font-size: 0.88rem;
+    color: var(--muted);
+    margin-top: 10px;
+}
+/* =========================
+   Login Panel — uniform size & alignment
+   ========================= */
+.login-panel {
+    max-width: 400px;
+    margin: 60px auto;
+    padding: 28px 26px;
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(250,255,250,0.96), rgba(242,247,242,0.9));
+    box-shadow: 0 8px 24px rgba(16,40,16,0.08);
+    border: 1px solid rgba(20,60,20,0.06);
+    text-align: left;
+}
+
+    .login-panel h2 {
+        margin-top: 0;
+        text-align: center;
+        color: var(--accent-2);
+        font-size: 1.4rem;
+        font-weight: 700;
+        margin-bottom: 18px;
+    }
+
+    .login-panel .form-row {
+        margin-bottom: 14px;
+    }
+
+    .login-panel label {
+        display: block;
+        font-weight: 600;
+        color: var(--accent-2);
+        margin-bottom: 6px;
+    }
+
+    .login-panel input[type="text"],
+    .login-panel input[type="password"] {
+        width: 100%;
+        padding: 10px 12px;
+        font-size: 1rem;
+        border: 1px solid rgba(20,40,20,0.15);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--text);
+        box-sizing: border-box;
+        transition: all 0.15s ease;
+    }
+
+        .login-panel input[type="text"]:focus,
+        .login-panel input[type="password"]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(46,125,50,0.1);
+            outline: none;
+        }
+
+    .login-panel .btn {
+        width: 100%;
+        font-size: 1rem;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: linear-gradient(180deg, var(--accent), var(--accent-2));
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+
+        .login-panel .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(20,80,40,0.2);
+        }
+
+        .login-panel .btn:active {
+            transform: translateY(0);
+            box-shadow: none;
+        }
+
+    .login-panel .required {
+        color: var(--danger);
+    }
+
+    .login-panel .error-text {
+        color: var(--danger);
+        font-weight: 600;
+        margin-top: 10px;
+        text-align: center;
+    }
+
+    .login-panel .muted {
+        text-align: center;
+        font-size: 0.88rem;
+        color: var(--muted);
+        margin-top: 8px;
+    }
+
+    /* Make sure fields align visually */
+    .login-panel input,
+    .login-panel button {
+        display: block;
+        margin: 0 auto;
+    }
+
+/* =========================
+   Responsive Adjustment
+   ========================= */
+@media (max-width: 520px) {
+    .login-panel {
+        max-width: 92%;
+        padding: 22px 18px;
+    }
+
+        .login-panel h2 {
+            font-size: 1.25rem;
+        }
+}
+/* =========================
+   Fixes: Equal login input widths + green Request Delete / Logout buttons
+   ========================= */
+
+/* Make login inputs perfectly equal width */
+/* =========================
+   Login spacing & exact-width fix (paste at end of index.css)
+   Ensures username & password inputs are identical and adds spacing
+   ========================= */
+
+.login-panel {
+    max-width: 420px; /* uniform container width */
+    margin: 64px auto;
+    padding: 32px 28px;
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(250,255,250,0.96), rgba(242,247,242,0.9));
+    box-shadow: 0 10px 28px rgba(16,40,16,0.08);
+    border: 1px solid rgba(20,60,20,0.06);
+}
+
+    /* make form rows clearly spaced */
+    .login-panel .form-row {
+        display: block;
+        margin-bottom: 18px !important; /* larger gap between fields */
+    }
+
+    /* label spacing a touch larger */
+    .login-panel label {
+        display: block;
+        margin-bottom: 8px !important;
+        font-weight: 600;
+        color: var(--accent-2);
+    }
+
+    /* Force identical rendering for username and password inputs */
+    .login-panel input[type="text"],
+    .login-panel input[type="password"],
+    .login-panel input[type="email"] {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+        padding: 12px 14px !important;
+        font-size: 1rem !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(20,40,20,0.15) !important;
+        background: #fff !important;
+        color: var(--text) !important;
+        display: block !important;
+        margin: 0 !important; /* no auto-centering — prevents visual width quirks */
+    }
+
+    /* Extra safe: remove any per-element width attributes that could interfere */
+    .login-panel input[style] {
+        width: 100% !important;
+    }
+
+    /* ensure clear gap between last input and the primary button */
+    .login-panel .btn {
+        width: 100% !important;
+        margin-top: 16px !important; /* space above button */
+        margin-bottom: 10px !important; /* space below button */
+        padding: 12px 14px !important;
+        border-radius: 8px !important;
+        font-weight: 700 !important;
+    }
+
+        /* If there are secondary inline buttons (cancel), space them too */
+        .login-panel .btn.secondary {
+            margin-top: 10px !important;
+        }
+
+    /* helper text spacing */
+    .login-panel .muted,
+    .login-panel .error-text,
+    .login-panel .note {
+        margin-top: 12px !important;
+    }
+
+/* small-screen adjustments */
+@media (max-width: 520px) {
+    .login-panel {
+        max-width: 94%;
+        padding: 22px 18px;
+    }
+
+        .login-panel .form-row {
+            margin-bottom: 14px !important;
+        }
+
+        .login-panel .btn {
+            margin-top: 12px !important;
+        }
+}
+
+
+    /* Focus styling */
+    .login-panel input[type="text"]:focus,
+    .login-panel input[type="password"]:focus {
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(46,125,50,0.1) !important;
+        outline: none !important;
+    }
+
+/* Request Delete and Logout Buttons — green theme */
+button.btn,
+.btn {
+    background: linear-gradient(180deg, var(--accent), var(--accent-2)) !important;
+    color: #fff !important;
+    border: none !important;
+    font-weight: 700 !important;
+    border-radius: 8px !important;
+    padding: 10px 16px !important;
+    transition: transform 0.1s ease, box-shadow 0.1s ease !important;
+    cursor: pointer !important;
+}
+
+    button.btn:hover,
+    .btn:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 16px rgba(20,80,40,0.25) !important;
+    }
+
+    button.btn:disabled,
+    .btn:disabled {
+        opacity: 0.6 !important;
+        cursor: not-allowed !important;
+    }
+
+    /* Optional: make small buttons (like Logout) match styling */
+    .btn.small {
+        background: linear-gradient(180deg, var(--accent), var(--accent-2)) !important;
+        color: #fff !important;
+        border: none !important;
+        font-weight: 600 !important;
+        padding: 8px 14px !important;
+        border-radius: 8px !important;
+    }
+
+/* Ensure logout button stands out slightly */
+.brand-right .btn.small {
+    box-shadow: 0 4px 10px rgba(22,75,30,0.15);
+}
+
+/* =========================
+   Responsive Adjustment
+   ========================= */
+@media (max-width: 520px) {
+    .login-panel {
+        max-width: 92%;
+        padding: 22px 18px;
+    }
+
+        .login-panel h2 {
+            font-size: 1.25rem;
+        }
+}
+
+/* Fallback: style inputs with no type attribute so they match text inputs */
+.login-panel input:not([type]) {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 12px 14px !important;
+  font-size: 1rem !important;
+  border-radius: 8px !important;
+  border: 1px solid rgba(20,40,20,0.15) !important;
+  background: #fff !important;
+  color: var(--text) !important;
+}
+
+input:not([type]) {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 1rem;
+  border-radius: 8px;
+  border: 1px solid rgba(20,40,20,0.15);
+  background: #fff;
+  color: var(--text);
+}
+
+.filters {
+  display: flex;
+  width: 30%;
+  gap: 12px; /* space between dropdowns */
+  align-items: center;
+  margin-top: 14px; /* adds breathing room below the filter row */
+  flex-wrap: wrap; /* ensures responsiveness on small screens */
+}
+
+.filters select {
+  background: #fff;
+  border: 1px solid rgba(20,40,20,0.15);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 1rem;
+  box-shadow: 0 4px 10px rgba(18,40,20,0.05);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.filters select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(46,125,50,0.1);
+  outline: none;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px; /* space between buttons */
+  margin-top: 10px; /* optional */
+}
+/* =========================
+   End of file - subtle banner background (optional)
+   ========================= */
+/* If you want a leaf texture banner put an image at /public/images/leaf.png */
+/*
+.app-root::before {
+  content:"";
+  position: absolute;
+  inset: 0;
+  background-image: url('/images/leaf.png');
+  opacity: 0.03;
+  pointer-events: none;
+  z-index: 0;
+}
+*/
