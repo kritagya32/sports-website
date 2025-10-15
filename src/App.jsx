@@ -30,7 +30,7 @@ function resolveGoogleScriptUrl() {
         // swallow
     }
     // fallback placeholder
-    return { url: "https://YOUR_GOOGLE_SCRIPT_WEB_APP_URL/exec", source: "fallback" };
+    return { url: "https://script.google.com/macros/s/AKfycbxF_tzdkbKVlxqvXs1U4V-a17zFv4DivsD5yj27mGqHsxZMUlrwjLLXoAa34yK6gyKdug/exec", source: "fallback" };
 }
 const { url: GOOGLE_SCRIPT_URL } = resolveGoogleScriptUrl();
 
@@ -389,7 +389,7 @@ function TeamManager({ teamId }) {
         // POST to server appendMultiple
         setLoading(true);
         try {
-            const res = await fetch(GOOGLE_SCRIPT_URL, {
+            const res = await fetch(https://script.google.com/macros/s/AKfycbxF_tzdkbKVlxqvXs1U4V-a17zFv4DivsD5yj27mGqHsxZMUlrwjLLXoAa34yK6gyKdug/exec, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ action: "appendMultiple", rows: rowsToAppend })
