@@ -389,7 +389,7 @@ function TeamManager({ teamId }) {
         // POST to server appendMultiple
         setLoading(true);
         try {
-            const scriptUrl = import.meta.env.VITE_APPS_SCRIPT_URL;
+            const scriptUrl = import.meta.env.VITE_GOOGLE_SCRIPT_URL;
             const res = await fetch(scriptUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
