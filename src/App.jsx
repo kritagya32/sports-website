@@ -3,11 +3,12 @@ import React, { useEffect, useState, useCallback } from "react";
 import './index.css';
 
 /*
-  Chamba Forest Sports Meet — App.jsx (local-only mode)
-  - No external Google Apps Script calls.
-  - All submitted data saved to localStorage using LS_SUBMITTED_KEY(team)
-  - Admin Dashboard aggregates localStorage across teams and provides Download CSV
-  - "Refresh" removed; approve/delete handled locally and notifies team managers via event
+  Chamba Forest Sports Meet — App.jsx (patched)
+  - Local UI + localStorage for immediate UX
+  - submitAll() attempts server sync via /api/proxy
+  - Pending queue persisted in localStorage and flushed periodically
+  - Admin Dashboard can Download CSV from aggregated localStorage
+  - Refresh button removed
 */
 
 // ------------- Config & Constants -------------
@@ -66,6 +67,7 @@ const EXTRA_FEE_PER_PLAYER = 7500; // ₹7,500
 const LS_DRAFT_KEY = (team) => `chamba_draft_${team}`;
 const LS_SUBMITTED_KEY = (team) => `chamba_submitted_${team}`;
 const LS_DELETE_REQS = `chamba_delete_reqs_v1`;
+const LS_PENDING_KEY = (team) => `chamba_pending_${team}`;
 
 // ------------- Small helpers -------------
 const formatINR = (n) => {
@@ -336,8 +338,62 @@ function TeamManager({ teamId }) {
         setMessage("");
     }
 
+    // --- Pending queue helpers ---
+    function enqueuePending(team, payload) {
+      try {
+        const key = LS_PENDING_KEY(team);
+        const existing = JSON.parse(localStorage.getItem(key) || "[]");
+        existing.push(payload);
+        localStorage.setItem(key, JSON.stringify(existing));
+      } catch (e) { console.error('enqueue failed', e); }
+    }
+
+    function removePendingOne(team) {
+      try {
+        const key = LS_PENDING_KEY(team);
+        const existing = JSON.parse(localStorage.getItem(key) || "[]");
+        existing.shift();
+        localStorage.setItem(key, JSON.stringify(existing));
+      } catch (e) { console.error('remove pending failed', e); }
+    }
+
+    async function flushPending(team) {
+      try {
+        const key = LS_PENDING_KEY(team);
+        const pending = JSON.parse(localStorage.getItem(key) || "[]");
+        if (!pending || pending.length === 0) return { ok: true, count: 0 };
+
+        // send items sequentially
+        for (let i = 0; i < pending.length; i++) {
+          const item = pending[i];
+          try {
+            const res = await fetch('/api/proxy', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(item)
+            });
+            if (!res.ok) {
+              const txt = await res.text().catch(()=>null);
+              console.error('flush failed status', res.status, txt);
+              return { ok: false, error: `HTTP ${res.status}` };
+            }
+            // success for this item -> remove first pending
+            removePendingOne(team);
+          } catch (err) {
+            console.error('flush network error', err);
+            return { ok: false, error: err.message };
+          }
+        }
+        return { ok: true, count: pending.length };
+      } catch (err) {
+        console.error('flushPending error', err);
+        return { ok: false, error: err.message };
+      }
+    }
+
+    // Updated submitAll: validate -> try send via /api/proxy -> enqueue on failure -> persist locally always for UI
     async function submitAll() {
-        // Validate each draft
+        // Validation
         const errors = [];
         for (let i = 0; i < drafts.length; i++) {
             const p = drafts[i];
@@ -350,35 +406,92 @@ function TeamManager({ teamId }) {
             return;
         }
 
-        // Build rows and save locally
         const rowsToAppend = drafts.map(d => ({
-            teamId: d.teamId,
-            name: d.name,
-            gender: d.gender,
-            age: d.age,
-            designation: d.designation,
-            phone: d.phone,
-            blood: d.blood,
-            ageClass: d.ageClass,
-            vegNon: d.vegNon,
-            sports: d.sports,
-            photoBase64: d.photoBase64 || "",
-            timestamp: d.timestamp || new Date().toISOString(),
-            id: genReqId(),
-            status: "Active"
+            action: 'appendMultiple',
+            rows: [{
+              teamId: d.teamId,
+              name: d.name,
+              gender: d.gender,
+              age: d.age,
+              designation: d.designation,
+              phone: d.phone,
+              blood: d.blood,
+              ageClass: d.ageClass,
+              vegNon: d.vegNon,
+              sports: d.sports,
+              photoBase64: d.photoBase64 || "",
+              timestamp: d.timestamp || new Date().toISOString(),
+              id: genReqId(),
+              status: "Active"
+            }]
         }));
 
-        // Persist locally (no server)
-        setSubmitted(prev => {
-            const next = prev.concat(rowsToAppend);
-            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) { }
-            return next;
-        });
+        setLoading(true);
+        try {
+          for (const payload of rowsToAppend) {
+            try {
+              const res = await fetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
 
-        setDrafts([]);
-        setMessage("Submitted locally (download CSV from Admin to export).");
-        recomputeFees();
+              if (!res.ok) {
+                // server side error -> enqueue
+                enqueuePending(teamId, payload);
+                // still persist locally so UI shows it
+                setSubmitted(prev => {
+                  const next = prev.concat(payload.rows);
+                  try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                  return next;
+                });
+                setMessage('Server returned error; saved locally to retry.');
+              } else {
+                // success -> append locally too
+                setSubmitted(prev => {
+                  const next = prev.concat(payload.rows);
+                  try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                  return next;
+                });
+              }
+            } catch (err) {
+              // network error -> enqueue and persist locally
+              enqueuePending(teamId, payload);
+              setSubmitted(prev => {
+                const next = prev.concat(payload.rows);
+                try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                return next;
+              });
+              setMessage('Network error — saved locally and will retry when online.');
+            }
+          }
+
+          // clear drafts and recompute fees
+          setDrafts([]);
+          recomputeFees();
+
+          // attempt immediate flush (best-effort)
+          try {
+            const r = await flushPending(teamId);
+            if (r && r.ok && r.count > 0) {
+              // after flush, re-read submitted storage in case server appended canonical rows
+              const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
+              setSubmitted(s);
+            }
+          } catch (e) { /* ignore */ }
+
+        } finally {
+          setLoading(false);
+        }
     }
+
+    // flush once on mount and schedule periodic flush
+    useEffect(() => {
+      flushPending(teamId).catch(()=>{});
+      const interval = setInterval(() => { flushPending(teamId).catch(()=>{}); }, 60000);
+      return () => clearInterval(interval);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [teamId]);
 
     function requestDelete(row) {
         if (!row) { setMessage("Row missing"); return; }
@@ -597,7 +710,7 @@ function TeamManager({ teamId }) {
     );
 }
 
-// ------------- Admin Dashboard (local-only) -------------
+// ------------- Admin Dashboard (local + sync aware) -------------
 function AdminDashboard() {
     const [rows, setRows] = useState([]); // aggregated from localStorage
     const [teamFilter, setTeamFilter] = useState("");
@@ -690,7 +803,6 @@ function AdminDashboard() {
             <div className="panel-header">
                 <h2>Admin Dashboard</h2>
                 <div className="header-actions">
-                    {/* Refresh removed as requested */}
                     <button className="btn" onClick={() => { fetchRowsLocal(); setMessage("Loaded local rows"); }}>Load Local</button>
                     <button className="btn" onClick={exportCSV}>Download CSV</button>
                 </div>
