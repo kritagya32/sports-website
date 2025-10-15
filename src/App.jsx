@@ -3,36 +3,12 @@ import React, { useEffect, useState, useCallback } from "react";
 import './index.css';
 
 /*
-  Chamba Forest Sports Meet — App.jsx (production-ready)
-  - Works with local mock-server (http://localhost:3001/) and with Google Apps Script URL set via:
-    import.meta.env.VITE_GOOGLE_SCRIPT_URL OR window.__VITE_GOOGLE_SCRIPT_URL
-  - Team managers (13 teams) and 3 admins
-  - Draft slots, photo upload & preview, validation rules, deletion workflow
-  - Admin approves deletion -> status 'Deleted' (visible but inactive)
-  - When admin approves, app dispatches 'chamba:rowDeleted' event so managers refresh and fees update
+  Chamba Forest Sports Meet — App.jsx (local-only mode)
+  - No external Google Apps Script calls.
+  - All submitted data saved to localStorage using LS_SUBMITTED_KEY(team)
+  - Admin Dashboard aggregates localStorage across teams and provides Download CSV
+  - "Refresh" removed; approve/delete handled locally and notifies team managers via event
 */
-
-// ------------- Environment resolution -------------
-function resolveGoogleScriptUrl() {
-    try {
-        // local dev override
-        if (typeof window !== "undefined") {
-            if (window.__VITE_GOOGLE_SCRIPT_URL) return { url: window.__VITE_GOOGLE_SCRIPT_URL, source: "window" };
-            if (window.location && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-                return { url: "http://localhost:3001/", source: "local" };
-            }
-        }
-        // Vite env
-        if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_GOOGLE_SCRIPT_URL) {
-            return { url: import.meta.env.VITE_GOOGLE_SCRIPT_URL, source: "vite" };
-        }
-    } catch (e) {
-        // swallow
-    }
-    // fallback placeholder
-    return { url: GOOGLE_SCRIPT_URL, source: "fallback" };
-}
-const { url: GOOGLE_SCRIPT_URL } = resolveGoogleScriptUrl();
 
 // ------------- Config & Constants -------------
 const TEAM_CREDENTIALS = [
@@ -170,6 +146,48 @@ function validateParticipant(part, teamExisting = []) {
     return { ok: true };
 }
 
+// ---------- CSV helpers ----------
+function escapeCsvValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) value = value.join(';');
+  if (typeof value === 'object') value = JSON.stringify(value);
+  const s = String(value);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function downloadCSV(rows = [], filename = 'registrations.csv') {
+  if (!rows || !rows.length) {
+    const blob = new Blob([''], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+  const headers = Object.keys(rows[0]);
+  const csvLines = [];
+  csvLines.push(headers.map(h => escapeCsvValue(h)).join(','));
+  for (const row of rows) {
+    const line = headers.map(h => escapeCsvValue(row[h]));
+    csvLines.push(line.join(','));
+  }
+  const csvContent = csvLines.join('\r\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ------------- App Root -------------
 export default function App() {
     const [user, setUser] = useState(null); // {type:'team', teamId} or {type:'admin', role}
@@ -237,7 +255,7 @@ function Login({ onLogin, message }) {
 
 // ------------- Team Manager -------------
 function TeamManager({ teamId }) {
-    // drafts: array of participants not yet submitted; submitted: array from server/cache
+    // drafts: array of participants not yet submitted; submitted: persisted local storage
     const [drafts, setDrafts] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_DRAFT_KEY(teamId)) || "[]") } catch { return [] } });
     const [submitted, setSubmitted] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]") } catch { return [] } });
     const [countInput, setCountInput] = useState("");
@@ -249,44 +267,10 @@ function TeamManager({ teamId }) {
     useEffect(() => { try { localStorage.setItem(LS_DRAFT_KEY(teamId), JSON.stringify(drafts)); } catch (e) { } }, [drafts, teamId]);
     useEffect(() => { try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(submitted)); } catch (e) { } }, [submitted, teamId]);
 
-    // fetch submitted rows from server (and populate submitted). Called on mount and when event indicates update
-    const fetchSubmitted = useCallback(async () => {
-        try {
-            const res = await fetch(GOOGLE_SCRIPT_URL + "?action=getAll");
-            if (!res.ok) throw new Error("Fetch failed " + res.status);
-            const data = await res.json();
-            const rows = Array.isArray(data.rows) ? data.rows : [];
-            // normalize statuses; keep only team rows
-            const teamRows = rows.filter(r => String(r.teamId || "").toLowerCase() === String(teamId).toLowerCase()).map(r => ({ ...r, status: r.status || "Active" }));
-            setSubmitted(teamRows);
-            return teamRows;
-        } catch (err) {
-            // if server unreachable, keep cached submitted (already in state)
-            console.warn("Could not fetch submitted rows:", err && err.message ? err.message : err);
-            return submitted;
-        }
-    }, [teamId, submitted]);
-
-    useEffect(() => {
-        // initial fetch
-        fetchSubmitted().then(() => recomputeFees());
-        // listen for deletion approvals from admin
-        function onDeleted(e) {
-            const detail = e && e.detail ? e.detail : null;
-            // if detail.teamId matches, refetch
-            if (!detail || !detail.teamId || String(detail.teamId).toLowerCase() === String(teamId).toLowerCase()) {
-                fetchSubmitted().then(() => recomputeFees());
-                setMessage("Updated after admin action");
-            }
-        }
-        window.addEventListener("chamba:rowDeleted", onDeleted);
-        return () => window.removeEventListener("chamba:rowDeleted", onDeleted);
-        // eslint-disable-next-line
-    }, [fetchSubmitted]);
+    useEffect(() => { recomputeFees(); }, []); // initial fees
 
     useEffect(() => {
         recomputeFees();
-        // eslint-disable-next-line
     }, [drafts, submitted]);
 
     function recomputeFees() {
@@ -299,7 +283,6 @@ function TeamManager({ teamId }) {
     function generateSlots() {
         const n = Math.max(0, Math.min(80, Number(countInput) || 0));
         if (n <= 0) { setMessage("Enter a number between 1 and 80"); return; }
-        // Limit by already active submitted players
         const activeSubmitted = (submitted || []).filter(r => r.status !== "Deleted").length;
         const available = Math.max(0, 80 - activeSubmitted);
         if (n > available) { setMessage(`You may add up to ${available} more players (already submitted ${activeSubmitted}).`); return; }
@@ -330,7 +313,6 @@ function TeamManager({ teamId }) {
         setDrafts(prev => {
             const copy = prev.slice();
             copy[idx] = { ...copy[idx], ...patch };
-            // if gender changes, clear invalid ageClass
             if (patch.gender && copy[idx].ageClass) {
                 const allowed = (AGE_CLASSES_MASTER[patch.gender] || []).map(a => a.id);
                 if (!allowed.includes(copy[idx].ageClass)) copy[idx].ageClass = "";
@@ -355,8 +337,7 @@ function TeamManager({ teamId }) {
     }
 
     async function submitAll() {
-        // Validate each draft with existing (submitted + other drafts)
-        // we validate per participant with teamExisting = submitted + other drafts (excluding itself)
+        // Validate each draft
         const errors = [];
         for (let i = 0; i < drafts.length; i++) {
             const p = drafts[i];
@@ -369,7 +350,7 @@ function TeamManager({ teamId }) {
             return;
         }
 
-        // Build rows for server and local update
+        // Build rows and save locally
         const rowsToAppend = drafts.map(d => ({
             teamId: d.teamId,
             name: d.name,
@@ -383,73 +364,41 @@ function TeamManager({ teamId }) {
             sports: d.sports,
             photoBase64: d.photoBase64 || "",
             timestamp: d.timestamp || new Date().toISOString(),
+            id: genReqId(),
             status: "Active"
         }));
 
-        // POST to server appendMultiple
-        setLoading(true);
-        try {
-            const scriptUrl = import.meta.env.VITE_GOOGLE_SCRIPT_URL;
-            const res = await fetch(scriptUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "appendMultiple", rows: rowsToAppend })
-            });
-            if (!res.ok) throw new Error("Append failed: " + res.status);
-            const data = await res.json();
-            // after successful append, re-fetch from server to get IDs etc.
-            await fetchSubmitted();
-            setDrafts([]);
-            setMessage("Submitted to Google Sheet successfully");
-        } catch (err) {
-            // If server unreachable, still accept locally (append to submitted cache and persist), mark no id
-            setSubmitted(prev => {
-                const localRows = rowsToAppend.map(r => ({ ...r, id: null }));
-                const updated = prev.concat(localRows);
-                try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(updated)); } catch (e) { }
-                return updated;
-            });
-            setDrafts([]);
-            setMessage("Server unreachable — saved locally as submitted (will sync later).");
-        } finally {
-            setLoading(false);
-            recomputeFeesLocal();
-        }
+        // Persist locally (no server)
+        setSubmitted(prev => {
+            const next = prev.concat(rowsToAppend);
+            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) { }
+            return next;
+        });
+
+        setDrafts([]);
+        setMessage("Submitted locally (download CSV from Admin to export).");
+        recomputeFees();
     }
 
-    function recomputeFeesLocal() {
-        const activeSubmitted = (submitted || []).filter(r => r.status !== "Deleted" && r.status !== "Requested");
-        const totalPlayers = activeSubmitted.length + (drafts || []).length;
-        const f = computeParticipationFees(totalPlayers, teamId);
-        setFees(f);
-    }
-
-    // Request delete on a submitted row
-    async function requestDelete(row) {
+    function requestDelete(row) {
         if (!row) { setMessage("Row missing"); return; }
         if (row.status === "Requested" || row.status === "Deleted") return;
         const reason = prompt("Enter brief reason for deletion:");
         if (!reason) return;
-        // Optimistic UI: mark as Requested
-        setSubmitted(prev => prev.map(r => (r.id && row.id && r.id === row.id) || (!r.id && !row.id && r.timestamp === row.timestamp) ? { ...r, status: "Requested" } : r));
-        // Save request locally + attempt server call
-        const payload = { reqId: genReqId(), rowId: row.id || null, teamId, name: row.name || "", timestamp: row.timestamp || null, reason, requestedAt: new Date().toISOString() };
+        // Mark as Requested locally
+        setSubmitted(prev => {
+            const updated = prev.map(r => ((r.id && row.id && r.id === row.id) || (!r.id && r.timestamp === row.timestamp)) ? { ...r, status: "Requested" } : r);
+            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(updated)); } catch (e) { }
+            return updated;
+        });
+        // Save request list
         try {
-            const base = GOOGLE_SCRIPT_URL.endsWith("/") ? GOOGLE_SCRIPT_URL : GOOGLE_SCRIPT_URL + "/";
-            const res = await fetch(base + "requestDelete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            if (!res.ok) throw new Error("requestDelete failed " + res.status);
-            const data = await res.json();
-            // optionally store server ack if returned
-        } catch (err) {
-            // persist to localStorage for admin review/offline
-            try {
-                const saved = JSON.parse(localStorage.getItem(LS_DELETE_REQS) || "[]");
-                saved.push(payload);
-                localStorage.setItem(LS_DELETE_REQS, JSON.stringify(saved));
-            } catch (e) { }
-        }
-        recomputeFeesLocal();
-        setMessage("Deletion requested. Admin will review.");
+            const saved = JSON.parse(localStorage.getItem(LS_DELETE_REQS) || "[]");
+            saved.push({ reqId: genReqId(), rowId: row.id || null, teamId, name: row.name || "", timestamp: row.timestamp || null, reason, requestedAt: new Date().toISOString() });
+            localStorage.setItem(LS_DELETE_REQS, JSON.stringify(saved));
+        } catch (e) { }
+        recomputeFees();
+        setMessage("Deletion requested locally. Admin will review.");
     }
 
     // UI helpers
@@ -473,8 +422,6 @@ function TeamManager({ teamId }) {
                     <label>Number of participants (1-80) <span className="required">*</span></label>
                     <input type="number" min="1" max="80" value={countInput} onChange={e => setCountInput(e.target.value)} />
                     <div className="row gap" style={{ marginTop: 12 }}>
-                        <br /><br /><br />
-                        <br/>
                         <button className="btn primary" onClick={generateSlots} disabled={loading}>Generate</button>
                         <button className="btn" onClick={() => { setCountInput(""); setMessage(""); }}>Cancel</button>
                     </div>
@@ -589,8 +536,6 @@ function TeamManager({ teamId }) {
                             </div>
 
                             <div className="row gap">
-                                <br/><br/>
-                                <br/>
                                 <button className="btn" onClick={() => removeDraft(idx)}>Remove</button>
                                 <div className="muted">Validation: {(() => {
                                     const others = submitted.concat(drafts.slice(0, idx)).concat(drafts.slice(idx + 1));
@@ -652,49 +597,67 @@ function TeamManager({ teamId }) {
     );
 }
 
-// ------------- Admin Dashboard -------------
+// ------------- Admin Dashboard (local-only) -------------
 function AdminDashboard() {
-    const [rows, setRows] = useState([]); // will store all rows from server
+    const [rows, setRows] = useState([]); // aggregated from localStorage
     const [teamFilter, setTeamFilter] = useState("");
     const [statusFilter, setStatusFilter] = useState("");
     const [message, setMessage] = useState("");
 
-    // fetch rows on mount
-    useEffect(() => { fetchRows(); }, []);
-
-    async function fetchRows() {
+    // load aggregated rows from localStorage
+    const fetchRowsLocal = useCallback(() => {
         try {
-            const res = await fetch(GOOGLE_SCRIPT_URL + "?action=getAll");
-            if (!res.ok) throw new Error("fetch failed " + res.status);
-            const data = await res.json();
-            const all = Array.isArray(data.rows) ? data.rows.map(r => ({ ...r, status: r.status || "Active" })) : [];
+            const all = [];
+            TEAM_CREDENTIALS.forEach(t => {
+                try {
+                    const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(t.teamId)) || "[]");
+                    if (Array.isArray(s)) {
+                        s.forEach(r => all.push({ ...r, teamId: t.teamId }));
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            });
             setRows(all);
+            return all;
         } catch (err) {
-            console.warn("Could not fetch rows:", err && err.message ? err.message : err);
-            // keep existing rows
+            console.warn("Could not load local rows:", err);
+            return [];
         }
-    }
+    }, []);
 
-    // Approve delete: mark status 'Deleted' on server; then update locally and dispatch event
-    async function approveDelete(reqRow) {
+    useEffect(() => {
+        fetchRowsLocal();
+    }, [fetchRowsLocal]);
+
+    // Approve delete: mark status 'Deleted' locally; update storage and dispatch event
+    function approveDelete(reqRow) {
         const ok = window.confirm(`Approve deletion for ${reqRow.name} (Team ${reqRow.teamId})?`);
         if (!ok) return;
         try {
-            const base = GOOGLE_SCRIPT_URL.endsWith("/") ? GOOGLE_SCRIPT_URL : GOOGLE_SCRIPT_URL + "/";
-            const payload = { action: "approveDelete", rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null, reqId: genReqId() };
-            const res = await fetch(base + "approveDelete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            if (!res.ok) throw new Error("approveDelete failed: " + res.status);
-            const data = await res.json();
-            // server should ideally mark the row; we'll update local state anyway
-            setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp) ? { ...r, status: "Deleted" } : r)));
-            // dispatch event for team managers
+            // mark in the team's local storage
+            try {
+                const team = reqRow.teamId;
+                const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(team)) || "[]");
+                const updated = (s || []).map(r => {
+                    if ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) {
+                        return { ...r, status: "Deleted" };
+                    }
+                    return r;
+                });
+                localStorage.setItem(LS_SUBMITTED_KEY(team), JSON.stringify(updated));
+            } catch (e) { console.error(e); }
+
+            // also update aggregated state in admin UI
+            setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) ? { ...r, status: "Deleted" } : r));
+
+            // dispatch event for team managers to refresh
             try { window.dispatchEvent(new CustomEvent("chamba:rowDeleted", { detail: { rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null } })); } catch (e) { }
-            setMessage("Deletion approved and marked Deleted.");
+
+            setMessage("Deletion approved and marked Deleted locally.");
         } catch (err) {
-            // fallback: mark locally
-            setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp) ? { ...r, status: "Deleted" } : r)));
-            try { window.dispatchEvent(new CustomEvent("chamba:rowDeleted", { detail: { rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null } })); } catch (e) { }
-            setMessage("Server unreachable — marked Deleted locally.");
+            console.error(err);
+            setMessage("Error while approving delete.");
         }
     }
 
@@ -727,7 +690,8 @@ function AdminDashboard() {
             <div className="panel-header">
                 <h2>Admin Dashboard</h2>
                 <div className="header-actions">
-                    <button className="btn" onClick={fetchRows}>Refresh</button>
+                    {/* Refresh removed as requested */}
+                    <button className="btn" onClick={() => { fetchRowsLocal(); setMessage("Loaded local rows"); }}>Load Local</button>
                     <button className="btn" onClick={exportCSV}>Download CSV</button>
                 </div>
             </div>
@@ -779,4 +743,3 @@ function AdminDashboard() {
         </div>
     );
 }
-
