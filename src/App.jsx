@@ -1,14 +1,14 @@
 // src/App.jsx
 import React, { useEffect, useState, useCallback } from "react";
 import './index.css';
+import { supabase } from './supabaseClient';
 
 /*
-  Chamba Forest Sports Meet — App.jsx (patched)
-  - Local UI + localStorage for immediate UX
-  - submitAll() attempts server sync via /api/proxy
-  - Pending queue persisted in localStorage and flushed periodically
-  - Admin Dashboard can Download CSV from aggregated localStorage
-  - Refresh button removed
+  Supabase-integrated App.jsx (patched for server-side delete-requests)
+  - requestDelete() now attempts to update Supabase (status='Requested')
+  - flushPending() supports 'appendMultiple' and 'requestDelete' actions
+  - Admin Dashboard Load button fetches from DB (includes Requested status)
+  - Keeps localStorage fallback + pending queue behavior
 */
 
 // ------------- Config & Constants -------------
@@ -93,10 +93,24 @@ function computeParticipationFees(count, teamId) {
     return { base, extraCount, extraAmount, total: base + extraAmount };
 }
 
-// ------------- Validation rules -------------
+// ------------- Validation (keeps existing stricter rules) -------------
 function validateParticipant(part, teamExisting = []) {
     if (!part.name || String(part.name).trim() === "") return { ok: false, message: "Name required" };
     if (!part.gender || (part.gender !== "Male" && part.gender !== "Female")) return { ok: false, message: "Select gender (Male/Female)" };
+    if (part.age === "" || part.age === null || part.age === undefined) return { ok: false, message: "Age is required" };
+    const ageN = Number(part.age);
+    if (!Number.isFinite(ageN) || ageN < 12 || ageN > 120) return { ok: false, message: "Enter valid age (12-120)" };
+    if (!part.designation || String(part.designation).trim() === "") return { ok: false, message: "Designation is required" };
+    if (!part.phone || String(part.phone).trim() === "") return { ok: false, message: "Phone is required" };
+    const phoneDigits = String(part.phone).replace(/\D/g, '');
+    if (!/^\d{10}$/.test(phoneDigits)) return { ok: false, message: "Enter a valid 10-digit phone number" };
+    if (!part.blood || String(part.blood).trim() === "") return { ok: false, message: "Select blood type" };
+    if (!BLOOD_TYPES.includes(part.blood)) return { ok: false, message: "Invalid blood type selected" };
+    if (!part.ageClass || String(part.ageClass).trim() === "") return { ok: false, message: "Select age class" };
+    const allowed = AGE_CLASSES_MASTER[part.gender] || [];
+    if (!allowed.some(a => a.id === part.ageClass)) return { ok: false, message: "Invalid age class for selected gender" };
+    if (!part.vegNon || !(part.vegNon === "Veg" || part.vegNon === "Non Veg")) return { ok: false, message: "Select Veg or Non Veg" };
+    if (!part.photoBase64 || String(part.photoBase64).trim() === "") return { ok: false, message: "Profile photo required (JPG/PNG ≤200KB)" };
     const chosen = (part.sports || []).filter(Boolean);
     if (chosen.length === 0) return { ok: false, message: "Choose at least one sport" };
     if (chosen.length > 3) return { ok: false, message: "Max 3 sports allowed" };
@@ -139,55 +153,49 @@ function validateParticipant(part, teamExisting = []) {
         if (part.gender === "Female" && carromFemaleCount >= 1) return { ok: false, message: "Only one female in Carrom singles per team" };
     }
 
-    // Age class validity
-    if (part.ageClass) {
-        const allowed = AGE_CLASSES_MASTER[part.gender] || [];
-        if (!allowed.some(a => a.id === part.ageClass)) return { ok: false, message: "Invalid age class for selected gender" };
-    }
-
     return { ok: true };
 }
 
-// ---------- CSV helpers ----------
+// ---------- CSV helpers (unchanged) ----------
 function escapeCsvValue(value) {
-  if (value === null || value === undefined) return '';
-  if (Array.isArray(value)) value = value.join(';');
-  if (typeof value === 'object') value = JSON.stringify(value);
-  const s = String(value);
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return '"' + s.replace(/"/g, '""') + '"';
-  }
-  return s;
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) value = value.join(';');
+    if (typeof value === 'object') value = JSON.stringify(value);
+    const s = String(value);
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
 }
 
 function downloadCSV(rows = [], filename = 'registrations.csv') {
-  if (!rows || !rows.length) {
-    const blob = new Blob([''], { type: 'text/csv;charset=utf-8;' });
+    if (!rows || !rows.length) {
+        const blob = new Blob([''], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+    }
+    const headers = Object.keys(rows[0]);
+    const csvLines = [];
+    csvLines.push(headers.map(h => escapeCsvValue(h)).join(','));
+    for (const row of rows) {
+        const line = headers.map(h => escapeCsvValue(row[h]));
+        csvLines.push(line.join(','));
+    }
+    const csvContent = csvLines.join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
-    return;
-  }
-  const headers = Object.keys(rows[0]);
-  const csvLines = [];
-  csvLines.push(headers.map(h => escapeCsvValue(h)).join(','));
-  for (const row of rows) {
-    const line = headers.map(h => escapeCsvValue(row[h]));
-    csvLines.push(line.join(','));
-  }
-  const csvContent = csvLines.join('\r\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 // ------------- App Root -------------
@@ -257,7 +265,6 @@ function Login({ onLogin, message }) {
 
 // ------------- Team Manager -------------
 function TeamManager({ teamId }) {
-    // drafts: array of participants not yet submitted; submitted: persisted local storage
     const [drafts, setDrafts] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_DRAFT_KEY(teamId)) || "[]") } catch { return [] } });
     const [submitted, setSubmitted] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]") } catch { return [] } });
     const [countInput, setCountInput] = useState("");
@@ -265,15 +272,11 @@ function TeamManager({ teamId }) {
     const [fees, setFees] = useState({ base: 0, extraCount: 0, extraAmount: 0, total: 0 });
     const [loading, setLoading] = useState(false);
 
-    // persist drafts and submitted cache locally to survive reloads
     useEffect(() => { try { localStorage.setItem(LS_DRAFT_KEY(teamId), JSON.stringify(drafts)); } catch (e) { } }, [drafts, teamId]);
     useEffect(() => { try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(submitted)); } catch (e) { } }, [submitted, teamId]);
 
-    useEffect(() => { recomputeFees(); }, []); // initial fees
-
-    useEffect(() => {
-        recomputeFees();
-    }, [drafts, submitted]);
+    useEffect(() => { recomputeFees(); }, []);
+    useEffect(() => { recomputeFees(); }, [drafts, submitted]);
 
     function recomputeFees() {
         const activeSubmitted = (submitted || []).filter(r => r.status !== "Deleted" && r.status !== "Requested");
@@ -340,60 +343,107 @@ function TeamManager({ teamId }) {
 
     // --- Pending queue helpers ---
     function enqueuePending(team, payload) {
-      try {
-        const key = LS_PENDING_KEY(team);
-        const existing = JSON.parse(localStorage.getItem(key) || "[]");
-        existing.push(payload);
-        localStorage.setItem(key, JSON.stringify(existing));
-      } catch (e) { console.error('enqueue failed', e); }
+        try {
+            const key = LS_PENDING_KEY(team);
+            const existing = JSON.parse(localStorage.getItem(key) || "[]");
+            existing.push(payload);
+            localStorage.setItem(key, JSON.stringify(existing));
+        } catch (e) { console.error('enqueue failed', e); }
     }
 
     function removePendingOne(team) {
-      try {
-        const key = LS_PENDING_KEY(team);
-        const existing = JSON.parse(localStorage.getItem(key) || "[]");
-        existing.shift();
-        localStorage.setItem(key, JSON.stringify(existing));
-      } catch (e) { console.error('remove pending failed', e); }
+        try {
+            const key = LS_PENDING_KEY(team);
+            const existing = JSON.parse(localStorage.getItem(key) || "[]");
+            existing.shift();
+            localStorage.setItem(key, JSON.stringify(existing));
+        } catch (e) { console.error('remove pending failed', e); }
     }
 
+    // flushPending now supports 'appendMultiple' and 'requestDelete'
     async function flushPending(team) {
-      try {
-        const key = LS_PENDING_KEY(team);
-        const pending = JSON.parse(localStorage.getItem(key) || "[]");
-        if (!pending || pending.length === 0) return { ok: true, count: 0 };
+        try {
+            const key = LS_PENDING_KEY(team);
+            const pending = JSON.parse(localStorage.getItem(key) || "[]");
+            if (!pending || pending.length === 0) return { ok: true, count: 0 };
 
-        // send items sequentially
-        for (let i = 0; i < pending.length; i++) {
-          const item = pending[i];
-          try {
-            const res = await fetch('/api/proxy', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(item)
-            });
-            if (!res.ok) {
-              const txt = await res.text().catch(()=>null);
-              console.error('flush failed status', res.status, txt);
-              return { ok: false, error: `HTTP ${res.status}` };
+            for (let i = 0; i < pending.length; i++) {
+                const item = pending[i];
+                try {
+                    if (item.action === 'appendMultiple') {
+                        const toInsert = item.rows.map(r => {
+                            const ageVal = (r.age === "" || r.age === null || r.age === undefined) ? null : parseInt(r.age, 10);
+                            const sportsArr = Array.isArray(r.sports) ? r.sports.filter(s => s && String(s).trim() !== "") : [];
+                            return {
+                                team_id: r.teamId || null,
+                                name: r.name || null,
+                                gender: r.gender || null,
+                                age: Number.isFinite(ageVal) ? ageVal : null,
+                                designation: r.designation || null,
+                                phone: r.phone || null,
+                                blood: r.blood || null,
+                                age_class: r.ageClass || null,
+                                veg_non: r.vegNon || null,
+                                sports: sportsArr,
+                                photo_base64: r.photoBase64 || null,
+                                timestamp: r.timestamp || new Date().toISOString(),
+                                status: r.status || "Active"
+                            };
+                        });
+
+                        const { data, error } = await supabase.from('participants').insert(toInsert).select();
+                        if (error) {
+                            console.error('flush appendMultiple failed (supabase):', error);
+                            return { ok: false, error: error.message || JSON.stringify(error) };
+                        }
+                        // success -> remove first pending
+                        removePendingOne(team);
+                    } else if (item.action === 'requestDelete') {
+                        const payload = item.payload || {};
+                        // If we have an id, update by id. Else try matching by team_id + timestamp (fallback)
+                        if (payload.id) {
+                            const { data, error } = await supabase.from('participants').update({ status: 'Requested' }).eq('id', payload.id).select();
+                            if (error) {
+                                console.error('flush requestDelete by id failed:', error);
+                                return { ok: false, error: error.message || JSON.stringify(error) };
+                            }
+                            removePendingOne(team);
+                        } else if (payload.timestamp && payload.teamId) {
+                            // try to match by team_id + timestamp (timestamp must match exactly)
+                            const { data, error } = await supabase.from('participants').update({ status: 'Requested' })
+                                .eq('team_id', payload.teamId)
+                                .eq('timestamp', payload.timestamp)
+                                .select();
+                            if (error) {
+                                console.error('flush requestDelete by timestamp failed:', error);
+                                return { ok: false, error: error.message || JSON.stringify(error) };
+                            }
+                            // If nothing matched, still remove pending to avoid infinite retry (optionally keep it)
+                            removePendingOne(team);
+                        } else {
+                            // Not enough info to perform server delete request; remove pending to avoid block (it's already marked locally)
+                            console.warn('requestDelete pending item missing id/timestamp, dropping', payload);
+                            removePendingOne(team);
+                        }
+                    } else {
+                        console.warn('Unknown pending action', item.action);
+                        // remove unknown to prevent blocking
+                        removePendingOne(team);
+                    }
+                } catch (err) {
+                    console.error('flushPending network error', err);
+                    return { ok: false, error: err.message };
+                }
             }
-            // success for this item -> remove first pending
-            removePendingOne(team);
-          } catch (err) {
-            console.error('flush network error', err);
+            return { ok: true, count: pending.length };
+        } catch (err) {
+            console.error('flushPending error', err);
             return { ok: false, error: err.message };
-          }
         }
-        return { ok: true, count: pending.length };
-      } catch (err) {
-        console.error('flushPending error', err);
-        return { ok: false, error: err.message };
-      }
     }
 
-    // Updated submitAll: validate -> try send via /api/proxy -> enqueue on failure -> persist locally always for UI
+    // submitAll (unchanged behaviour for inserts)
     async function submitAll() {
-        // Validation
         const errors = [];
         for (let i = 0; i < drafts.length; i++) {
             const p = drafts[i];
@@ -406,115 +456,141 @@ function TeamManager({ teamId }) {
             return;
         }
 
-        const rowsToAppend = drafts.map(d => ({
-            action: 'appendMultiple',
-            rows: [{
-              teamId: d.teamId,
-              name: d.name,
-              gender: d.gender,
-              age: d.age,
-              designation: d.designation,
-              phone: d.phone,
-              blood: d.blood,
-              ageClass: d.ageClass,
-              vegNon: d.vegNon,
-              sports: d.sports,
-              photoBase64: d.photoBase64 || "",
-              timestamp: d.timestamp || new Date().toISOString(),
-              id: genReqId(),
-              status: "Active"
-            }]
-        }));
+        const insertRows = drafts.map(d => {
+            const ageVal = (d.age === "" || d.age === null || d.age === undefined) ? null : parseInt(d.age, 10);
+            const sportsArr = Array.isArray(d.sports) ? d.sports.filter(s => s && String(s).trim() !== "") : [];
+            return {
+                team_id: d.teamId || null,
+                name: d.name || null,
+                gender: d.gender || null,
+                age: Number.isFinite(ageVal) ? ageVal : null,
+                designation: d.designation || null,
+                phone: d.phone || null,
+                blood: d.blood || null,
+                age_class: d.ageClass || null,
+                veg_non: d.vegNon || null,
+                sports: sportsArr,
+                photo_base64: d.photoBase64 || null,
+                timestamp: d.timestamp || new Date().toISOString(),
+                status: "Active"
+            };
+        });
 
         setLoading(true);
         try {
-          for (const payload of rowsToAppend) {
+            const { data, error } = await supabase.from('participants').insert(insertRows).select();
+
+            if (error) {
+                console.error('Supabase insert error:', error);
+                enqueuePending(teamId, { action: 'appendMultiple', rows: drafts.map(d => ({ ...d })) });
+                setSubmitted(prev => {
+                    const next = prev.concat(drafts.map(d => ({ ...d, status: "Active" })));
+                    try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) { console.error('localStorage write failed', e); }
+                    return next;
+                });
+                const serverMsg = error.message || (error.error ? error.error : JSON.stringify(error));
+                setMessage('Error saving to server: ' + serverMsg);
+            } else {
+                const mapped = (data || []).map(r => ({
+                    id: r.id,
+                    teamId: r.team_id,
+                    name: r.name,
+                    gender: r.gender,
+                    age: r.age,
+                    designation: r.designation,
+                    phone: r.phone,
+                    blood: r.blood,
+                    ageClass: r.age_class,
+                    vegNon: r.veg_non,
+                    sports: r.sports,
+                    photoBase64: r.photo_base64,
+                    timestamp: r.timestamp,
+                    status: r.status || "Active"
+                }));
+
+                setSubmitted(prev => {
+                    const next = prev.concat(mapped);
+                    try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) { console.error('localStorage write failed', e); }
+                    return next;
+                });
+
+                setMessage("Saved to server!");
+            }
+
+            setDrafts([]);
+            recomputeFees();
+
             try {
-              const res = await fetch('/api/proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-              });
+                const r = await flushPending(teamId);
+                if (r && r.ok && r.count > 0) {
+                    const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
+                    setSubmitted(s);
+                }
+            } catch (e) { /* ignore */ }
 
-              if (!res.ok) {
-                // server side error -> enqueue
-                enqueuePending(teamId, payload);
-                // still persist locally so UI shows it
-                setSubmitted(prev => {
-                  const next = prev.concat(payload.rows);
-                  try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
-                  return next;
-                });
-                setMessage('Server returned error; saved locally to retry.');
-              } else {
-                // success -> append locally too
-                setSubmitted(prev => {
-                  const next = prev.concat(payload.rows);
-                  try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
-                  return next;
-                });
-              }
-            } catch (err) {
-              // network error -> enqueue and persist locally
-              enqueuePending(teamId, payload);
-              setSubmitted(prev => {
-                const next = prev.concat(payload.rows);
-                try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
-                return next;
-              });
-              setMessage('Network error — saved locally and will retry when online.');
-            }
-          }
-
-          // clear drafts and recompute fees
-          setDrafts([]);
-          recomputeFees();
-
-          // attempt immediate flush (best-effort)
-          try {
-            const r = await flushPending(teamId);
-            if (r && r.ok && r.count > 0) {
-              // after flush, re-read submitted storage in case server appended canonical rows
-              const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
-              setSubmitted(s);
-            }
-          } catch (e) { /* ignore */ }
-
+        } catch (err) {
+            console.error('submitAll fatal', err);
+            setMessage('Unexpected error: ' + (err.message || String(err)));
         } finally {
-          setLoading(false);
+            setLoading(false);
         }
     }
 
-    // flush once on mount and schedule periodic flush
     useEffect(() => {
-      flushPending(teamId).catch(()=>{});
-      const interval = setInterval(() => { flushPending(teamId).catch(()=>{}); }, 60000);
-      return () => clearInterval(interval);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+        flushPending(teamId).catch(() => { });
+        const interval = setInterval(() => { flushPending(teamId).catch(() => { }); }, 60000);
+        return () => clearInterval(interval);
     }, [teamId]);
 
+    // requestDelete: attempt server update if id present, else enqueue a requestDelete pending action
     function requestDelete(row) {
         if (!row) { setMessage("Row missing"); return; }
         if (row.status === "Requested" || row.status === "Deleted") return;
-        const reason = prompt("Enter brief reason for deletion:");
-        if (!reason) return;
-        // Mark as Requested locally
+        const reason = prompt("Enter brief reason for deletion (optional):");
+        if (reason === null) return; // user cancelled
+
+        // optimistic local update: mark as Requested locally so UI updates immediately
         setSubmitted(prev => {
             const updated = prev.map(r => ((r.id && row.id && r.id === row.id) || (!r.id && r.timestamp === row.timestamp)) ? { ...r, status: "Requested" } : r);
-            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(updated)); } catch (e) { }
+            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(updated)); } catch (e) { console.error(e); }
             return updated;
         });
-        // Save request list
+
+        // persist request in delete requests log (local)
         try {
             const saved = JSON.parse(localStorage.getItem(LS_DELETE_REQS) || "[]");
             saved.push({ reqId: genReqId(), rowId: row.id || null, teamId, name: row.name || "", timestamp: row.timestamp || null, reason, requestedAt: new Date().toISOString() });
             localStorage.setItem(LS_DELETE_REQS, JSON.stringify(saved));
-        } catch (e) { }
-        recomputeFees();
-        setMessage("Deletion requested locally. Admin will review.");
+        } catch (e) { console.error(e); }
+
+        // Now attempt server update if we have id; otherwise enqueue pending requestDelete
+        if (row.id) {
+            // attempt immediate server update
+            (async () => {
+                try {
+                    const { data, error } = await supabase.from('participants').update({ status: 'Requested' }).eq('id', row.id).select();
+                    if (error) {
+                        console.warn('Supabase update requestDelete failed, enqueuing', error);
+                        // enqueue pending for retry
+                        enqueuePending(teamId, { action: 'requestDelete', payload: { id: row.id, teamId, timestamp: row.timestamp, name: row.name, reason } });
+                        setMessage("Deletion requested locally; will retry server update.");
+                    } else {
+                        // success -> inform user
+                        setMessage("Deletion requested and saved on server.");
+                    }
+                } catch (err) {
+                    console.error('requestDelete network error, enqueuing', err);
+                    enqueuePending(teamId, { action: 'requestDelete', payload: { id: row.id, teamId, timestamp: row.timestamp, name: row.name, reason } });
+                    setMessage("Deletion requested locally; will retry server update.");
+                }
+            })();
+        } else {
+            // no id yet (row not on server) -> enqueue so when row is inserted we can try to mark it requested by matching timestamp/team
+            enqueuePending(teamId, { action: 'requestDelete', payload: { id: null, teamId, timestamp: row.timestamp, name: row.name, reason } });
+            setMessage("Deletion requested locally; will apply on server after row sync.");
+        }
     }
 
-    // UI helpers
     const activeSubmittedCount = (submitted || []).filter(r => r.status !== "Deleted").length;
     const totalParticipants = activeSubmittedCount + (drafts || []).length;
     const filledDrafts = (drafts || []).filter(d => d.name && d.name.trim()).length;
@@ -550,11 +626,11 @@ function TeamManager({ teamId }) {
                         <div className="progress-bar"><div className="progress-fill" style={{ width: `${progressPercent}%` }} /></div>
                         <div className="muted">Draft filled: {filledDrafts}/{drafts.length} ({progressPercent}%)</div>
                     </div>
-                    <div className="note">All Team Managers are requested to enter 3 Sports as per categories listed by Chairman Organizing Committee.</div>
+                    <div className="note">All Team Managers are requested to enter required fields. At least one sport is compulsory.</div>
                 </div>
             </div>
 
-            {/* Draft editor or message */}
+            {/* Draft editor and submitted table (unchanged UI) */}
             {drafts.length === 0 ? (
                 <div className="card">
                     <h4>No draft slots. Generate slots to add participants.</h4>
@@ -583,25 +659,25 @@ function TeamManager({ teamId }) {
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Age</label>
+                                    <label>Age <span className="required">*</span></label>
                                     <input type="number" min="12" max="120" value={d.age} onChange={e => updateDraft(idx, { age: e.target.value })} />
                                 </div>
                             </div>
 
                             <div className="grid-3">
                                 <div>
-                                    <label>Designation</label>
+                                    <label>Designation <span className="required">*</span></label>
                                     <select value={d.designation} onChange={e => updateDraft(idx, { designation: e.target.value })}>
                                         <option value="">Select</option>
                                         {DESIGNATIONS.map(s => <option key={s} value={s}>{s}</option>)}
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Phone</label>
+                                    <label>Phone <span className="required">*</span></label>
                                     <input value={d.phone} onChange={e => updateDraft(idx, { phone: e.target.value })} />
                                 </div>
                                 <div>
-                                    <label>Blood Type</label>
+                                    <label>Blood Type <span className="required">*</span></label>
                                     <select value={d.blood} onChange={e => updateDraft(idx, { blood: e.target.value })}>
                                         <option value="">Select</option>
                                         {BLOOD_TYPES.map(b => <option key={b} value={b}>{b}</option>)}
@@ -611,14 +687,14 @@ function TeamManager({ teamId }) {
 
                             <div className="grid-3">
                                 <div>
-                                    <label>Age class</label>
+                                    <label>Age class <span className="required">*</span></label>
                                     <select value={d.ageClass} onChange={e => updateDraft(idx, { ageClass: e.target.value })}>
                                         <option value="">Select</option>
                                         {(d.gender ? (AGE_CLASSES_MASTER[d.gender] || []) : []).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Veg / Non-Veg</label>
+                                    <label>Veg / Non-Veg <span className="required">*</span></label>
                                     <select value={d.vegNon} onChange={e => updateDraft(idx, { vegNon: e.target.value })}>
                                         <option value="">Select</option>
                                         <option>Veg</option>
@@ -626,14 +702,14 @@ function TeamManager({ teamId }) {
                                     </select>
                                 </div>
                                 <div>
-                                    <label>Upload profile photo <span className="muted small">JPG/PNG ≤200KB</span></label>
+                                    <label>Upload profile photo <span className="required">*</span> <span className="muted small">JPG/PNG ≤200KB</span></label>
                                     <input type="file" accept="image/jpeg,image/png" onChange={async e => { const f = e.target.files && e.target.files[0]; if (f) await handlePhotoChange(idx, f); }} />
                                     {d.photoBase64 && <img src={d.photoBase64} alt="preview" className="photo-thumb" />}
                                 </div>
                             </div>
 
                             <div>
-                                <label>Select up to 3 sports</label>
+                                <label>Select up to 3 sports <span className="required">*</span></label>
                                 <div className="grid-3">
                                     {[0, 1, 2].map(i => (
                                         <select key={i} value={d.sports[i] || ""} onChange={e => {
@@ -666,7 +742,6 @@ function TeamManager({ teamId }) {
                 </div>
             )}
 
-            {/* Submitted / Combined table */}
             <div className="card">
                 <h3>Combined Participants (Submitted + Draft)</h3>
                 <div className="table-scroll small">
@@ -710,14 +785,46 @@ function TeamManager({ teamId }) {
     );
 }
 
-// ------------- Admin Dashboard (local + sync aware) -------------
+// ------------- Admin Dashboard (Supabase + local fallback) -------------
 function AdminDashboard() {
-    const [rows, setRows] = useState([]); // aggregated from localStorage
+    const [rows, setRows] = useState([]); // aggregated from Supabase (preferred) or localStorage
     const [teamFilter, setTeamFilter] = useState("");
     const [statusFilter, setStatusFilter] = useState("");
     const [message, setMessage] = useState("");
 
-    // load aggregated rows from localStorage
+    // load from Supabase first; fallback to localStorage
+    const fetchFromSupabase = useCallback(async () => {
+        try {
+            const { data, error } = await supabase.from('participants').select('*').order('timestamp', { ascending: false });
+            if (error) {
+                console.warn('Supabase fetch error, falling back to local:', error);
+                return null;
+            }
+            // normalize
+            const normalized = (data || []).map(r => ({
+                id: r.id,
+                teamId: r.team_id,
+                name: r.name,
+                gender: r.gender,
+                age: r.age,
+                designation: r.designation,
+                phone: r.phone,
+                blood: r.blood,
+                ageClass: r.age_class,
+                vegNon: r.veg_non,
+                sports: r.sports,
+                photoBase64: r.photo_base64,
+                timestamp: r.timestamp,
+                status: r.status || "Active"
+            }));
+            setRows(normalized);
+            return normalized;
+        } catch (err) {
+            console.error('fetchFromSupabase failed', err);
+            return null;
+        }
+    }, []);
+
     const fetchRowsLocal = useCallback(() => {
         try {
             const all = [];
@@ -740,14 +847,32 @@ function AdminDashboard() {
     }, []);
 
     useEffect(() => {
-        fetchRowsLocal();
-    }, [fetchRowsLocal]);
+        (async () => {
+            const sup = await fetchFromSupabase();
+            if (!sup) {
+                fetchRowsLocal();
+                setMessage("Loaded local rows (offline or Supabase error).");
+            } else {
+                setMessage("Loaded rows from Supabase.");
+            }
+        })();
+    }, [fetchFromSupabase, fetchRowsLocal]);
 
-    // Approve delete: mark status 'Deleted' locally; update storage and dispatch event
-    function approveDelete(reqRow) {
+    // Approve delete: mark status 'Deleted' in Supabase and locally
+    async function approveDelete(reqRow) {
         const ok = window.confirm(`Approve deletion for ${reqRow.name} (Team ${reqRow.teamId})?`);
         if (!ok) return;
         try {
+            // Attempt to update Supabase first (if id available)
+            if (reqRow.id) {
+                const { data, error } = await supabase.from('participants').update({ status: 'Deleted' }).eq('id', reqRow.id);
+                if (error) {
+                    console.warn('Supabase update failed; falling back to local mark', error);
+                }
+            } else {
+                console.warn('No id present for row; will mark locally only.');
+            }
+
             // mark in the team's local storage
             try {
                 const team = reqRow.teamId;
@@ -767,7 +892,7 @@ function AdminDashboard() {
             // dispatch event for team managers to refresh
             try { window.dispatchEvent(new CustomEvent("chamba:rowDeleted", { detail: { rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null } })); } catch (e) { }
 
-            setMessage("Deletion approved and marked Deleted locally.");
+            setMessage("Deletion approved (Supabase attempted; marked Deleted locally).");
         } catch (err) {
             console.error(err);
             setMessage("Error while approving delete.");
@@ -790,7 +915,7 @@ function AdminDashboard() {
         ])];
         const csvContent = csvRows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement("a");
+        const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
         link.setAttribute("download", "chamba_registrations.csv");
         document.body.appendChild(link);
@@ -803,7 +928,7 @@ function AdminDashboard() {
             <div className="panel-header">
                 <h2>Admin Dashboard</h2>
                 <div className="header-actions">
-                    <button className="btn" onClick={() => { fetchRowsLocal(); setMessage("Loaded local rows"); }}>Load Local</button>
+                    <button className="btn" onClick={async () => { const sup = await fetchFromSupabase(); if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows"); } else setMessage("Loaded from Supabase"); }}>Load</button>
                     <button className="btn" onClick={exportCSV}>Download CSV</button>
                 </div>
             </div>
