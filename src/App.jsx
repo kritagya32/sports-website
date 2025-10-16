@@ -46,7 +46,7 @@
       "Volleyball","Kabaddi","Basketball","Tug of War","Football","Lawn Tennis","Quiz","10k Marathon"
     ];
 
-    const DESIGNATIONS = ["CCF and above", "CF", "DCF/DFO", "RFO", "Block Officer/Forest Guard", "Ministerial Staff", "Others"];
+    const DESIGNATIONS = ["PCCF","APCCF","CCF", "CF", "DCF/DFO","ACF", "RFO", "Block Officer/Forest Guard", "Ministerial Staff","Van Mitra", "Others"];
     const BLOOD_TYPES = ["A+","A-","B+","B-","AB+","AB-","O+","O-"];
 
     const AGE_CLASSES_MASTER = {
@@ -317,7 +317,7 @@
           <header className="app-header">
             <div className="brand">
               <div className="brand-icon">🌲</div>
-              <div><h1>26th State Level Sports & Duty Meet, 2025 — Registration Portal</h1></div>
+              <div><h1>26th State Level Forest Sports & Duty Meet, 2025 — Registration Portal</h1></div>
             </div>
             <div className="brand-right">
               {user ? (
