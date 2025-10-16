@@ -4,14 +4,14 @@ import './index.css';
 import { supabase } from './supabaseClient';
 
 /*
-  Supabase-integrated App.jsx
-  - TeamManager now fetches from Supabase and subscribes to realtime changes
-  - Received events update submitted state + localStorage
-  - Reconciliation after inserts updates local placeholders with server ids/status
-  - Keeps pending queue for offline retries
+  Full patched App.jsx
+  - Supabase realtime, fetch, pending queue
+  - Strong validation with age-class and sport eligibility rules
+  - Per-age-class limits for Chess, Carrom, Badminton, Table Tennis
+  - Admin sport filter
 */
 
-// ------------- Config & Constants -------------
+// -------------------- Constants --------------------
 const TEAM_CREDENTIALS = [
     { teamId: "Chamba", username: "chamba", password: "Ch@mba2025" },
     { teamId: "Dharamshala", username: "dharamshala", password: "Dhar@2025" },
@@ -58,16 +58,16 @@ const AGE_CLASSES_MASTER = {
     ]
 };
 
-const DEFAULT_BASE_FEE_FIRST_35 = 300000; // ₹3,00,000
-const SOLAN_BILASPUR_BASE = 250000; // ₹2,50,000
-const EXTRA_FEE_PER_PLAYER = 7500; // ₹7,500
+const DEFAULT_BASE_FEE_FIRST_35 = 300000;
+const SOLAN_BILASPUR_BASE = 250000;
+const EXTRA_FEE_PER_PLAYER = 7500;
 
 const LS_DRAFT_KEY = (team) => `chamba_draft_${team}`;
 const LS_SUBMITTED_KEY = (team) => `chamba_submitted_${team}`;
 const LS_DELETE_REQS = `chamba_delete_reqs_v1`;
 const LS_PENDING_KEY = (team) => `chamba_pending_${team}`;
 
-// ------------- Helpers -------------
+// -------------------- Helpers --------------------
 const formatINR = (n) => { try { return "₹" + Number(n).toLocaleString('en-IN'); } catch { return "₹" + n; } };
 const toBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -76,6 +76,7 @@ const toBase64 = (file) => new Promise((resolve, reject) => {
     reader.readAsDataURL(file);
 });
 const genReqId = () => `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
 function computeParticipationFees(count, teamId) {
     const n = Math.max(0, Number(count) || 0);
     let base = DEFAULT_BASE_FEE_FIRST_35;
@@ -86,7 +87,69 @@ function computeParticipationFees(count, teamId) {
     return { base, extraCount, extraAmount, total: base + extraAmount };
 }
 
-// Validation (kept stricter)
+// -------------------- Age-class & sport eligibility rules --------------------
+
+// Allowed age classes based on gender and numeric age (per your rules)
+function getAllowedAgeClasses(gender, age) {
+    if (!gender) return [];
+    const a = Number(age);
+    if (gender === "Male") {
+        if (!Number.isFinite(a)) {
+            // If age unknown, allow Men - Open only to be conservative
+            return [AGE_CLASSES_MASTER.Male[0]];
+        }
+        // Per your instructions:
+        // any male -> men_open
+        // >=45 -> men_open & men_vet
+        // >=53 -> men_open & men_sr_vet
+        if (a >= 53) return [AGE_CLASSES_MASTER.Male[0], AGE_CLASSES_MASTER.Male[2]];
+        if (a >= 45) return [AGE_CLASSES_MASTER.Male[0], AGE_CLASSES_MASTER.Male[1]];
+        return [AGE_CLASSES_MASTER.Male[0]];
+    } else if (gender === "Female") {
+        const f = Number(age);
+        if (!Number.isFinite(f)) return [AGE_CLASSES_MASTER.Female[0]];
+        if (f >= 40) return [AGE_CLASSES_MASTER.Female[0], AGE_CLASSES_MASTER.Female[1]];
+        return [AGE_CLASSES_MASTER.Female[0]];
+    }
+    return [];
+}
+
+// Allowed sports given gender + ageClass
+function allowedSportsFor(gender, ageClass) {
+    // default: all sports allowed
+    if (!gender) return SPORTS.slice();
+
+    const menOpenDisallowed = new Set(["400 m walking", "800 m walking"]);
+    const menVetDisallowed = new Set([
+        "800 m", "1500 m", "5000 m", "4x100 m relay", "Triple Jump",
+        "400 m walking", "800 m walking", "Carrom (Singles)", "Carrom (Doubles)"
+    ]);
+    const menSrVetAllowed = new Set([
+        "800 m walking",
+        "Table Tennis(Singles)", "Table Tennis(Doubles)", "Table Tennis (Mix Doubles)",
+        "Badminton (Singles)", "Badminton (Doubles)", "Badminton (Mixed Doubles)",
+        "Quiz", "10k Marathon"
+    ]);
+    const womenOpenDisallowed = new Set(["Football", "Lawn Tennis"]);
+    const womenVetAllowed = new Set(["800 m walking", "Quiz", "10k Marathon"]);
+
+    if (gender === "Male") {
+        if (ageClass === "men_open") return SPORTS.filter(s => !menOpenDisallowed.has(s));
+        if (ageClass === "men_vet") return SPORTS.filter(s => !menVetDisallowed.has(s));
+        if (ageClass === "men_sr_vet") return SPORTS.filter(s => menSrVetAllowed.has(s));
+        return SPORTS.slice();
+    } else {
+        if (ageClass === "women_open") return SPORTS.filter(s => !womenOpenDisallowed.has(s));
+        if (ageClass === "women_vet") return SPORTS.filter(s => womenVetAllowed.has(s));
+        return SPORTS.slice();
+    }
+}
+
+// -------------------- Validation --------------------
+// This is the authoritative validator. It checks all mandatory fields and enforces rules:
+// - age class valid for gender/age
+// - allowed sports based on age class
+// - per-age-class/team quotas for Chess, Carrom, Badminton, Table Tennis
 function validateParticipant(part, teamExisting = []) {
     if (!part.name || String(part.name).trim() === "") return { ok: false, message: "Name required" };
     if (!part.gender || (part.gender !== "Male" && part.gender !== "Female")) return { ok: false, message: "Select gender (Male/Female)" };
@@ -100,53 +163,63 @@ function validateParticipant(part, teamExisting = []) {
     if (!part.blood || String(part.blood).trim() === "") return { ok: false, message: "Select blood type" };
     if (!BLOOD_TYPES.includes(part.blood)) return { ok: false, message: "Invalid blood type selected" };
     if (!part.ageClass || String(part.ageClass).trim() === "") return { ok: false, message: "Select age class" };
-    const allowed = AGE_CLASSES_MASTER[part.gender] || [];
-    if (!allowed.some(a => a.id === part.ageClass)) return { ok: false, message: "Invalid age class for selected gender" };
+
+    // age-class allowed
+    const allowedClasses = getAllowedAgeClasses(part.gender, part.age);
+    if (!allowedClasses.some(a => a.id === part.ageClass)) return { ok: false, message: "Invalid age class for this participant's age/gender" };
+
     if (!part.vegNon || !(part.vegNon === "Veg" || part.vegNon === "Non Veg")) return { ok: false, message: "Select Veg or Non Veg" };
     if (!part.photoBase64 || String(part.photoBase64).trim() === "") return { ok: false, message: "Profile photo required (JPG/PNG ≤200KB)" };
+
     const chosen = (part.sports || []).filter(Boolean);
     if (chosen.length === 0) return { ok: false, message: "Choose at least one sport" };
     if (chosen.length > 3) return { ok: false, message: "Max 3 sports allowed" };
 
-    // domain rules (badminton/table tennis etc.) same as earlier
-    const bdSinglesMale = teamExisting.filter(p => p.gender === "Male" && (p.sports || []).includes("Badminton (Singles)")).length;
-    const bdSinglesFemale = teamExisting.filter(p => p.gender === "Female" && (p.sports || []).includes("Badminton (Singles)")).length;
-    const bdDoublesMaleExists = teamExisting.some(p => (p.sports || []).includes("Badminton (Doubles)") && p.gender === "Male");
-    const bdDoublesFemaleExists = teamExisting.some(p => (p.sports || []).includes("Badminton (Doubles)") && p.gender === "Female");
-    const bdMixedExists = teamExisting.some(p => (p.sports || []).includes("Badminton (Mixed Doubles)"));
-    if (chosen.includes("Badminton (Singles)")) {
-        if (part.gender === "Male" && bdSinglesMale >= 2) return { ok: false, message: "Only two male badminton singles allowed per team" };
-        if (part.gender === "Female" && bdSinglesFemale >= 2) return { ok: false, message: "Only two female badminton singles allowed per team" };
-    }
-    if (chosen.includes("Badminton (Doubles)")) {
-        if (part.gender === "Male" && bdDoublesMaleExists) return { ok: false, message: "Only one male badminton doubles team allowed per team" };
-        if (part.gender === "Female" && bdDoublesFemaleExists) return { ok: false, message: "Only one female badminton doubles team allowed per team" };
-    }
-    if (chosen.includes("Badminton (Mixed Doubles)") && bdMixedExists) return { ok: false, message: "Only one badminton mixed doubles team allowed per team" };
+    // sports allowed by age-class
+    const allowedSports = new Set(allowedSportsFor(part.gender, part.ageClass));
+    const invalidChosen = chosen.filter(s => !allowedSports.has(s));
+    if (invalidChosen.length > 0) return { ok: false, message: `Selected sport(s) not allowed for ${part.ageClass.replace(/_/g, ' ')}: ${invalidChosen.join(', ')}` };
 
-    const ttSinglesCount = teamExisting.filter(p => (p.sports || []).includes("Table Tennis(Singles)")).length;
-    const ttDoublesExists = teamExisting.some(p => (p.sports || []).includes("Table Tennis(Doubles)") || (p.sports || []).includes("Table Tennis (Mix Doubles)"));
-    if (chosen.includes("Table Tennis(Singles)") && ttSinglesCount >= 2) return { ok: false, message: "Only two TT singles allowed per team" };
-    if ((chosen.includes("Table Tennis(Doubles)") || chosen.includes("Table Tennis (Mix Doubles)")) && ttDoublesExists) return { ok: false, message: "Only one TT doubles/mix per team" };
+    // Now enforce per-age-class quotas using teamExisting (mix of submitted + drafts)
+    const sameAgeClass = (teamExisting || []).filter(r => (r.ageClass || "") === (part.ageClass || ""));
 
-    const chessMaleCount = teamExisting.filter(p => p.gender === "Male" && (p.sports || []).includes("Chess")).length;
-    const chessFemaleCount = teamExisting.filter(p => p.gender === "Female" && (p.sports || []).includes("Chess")).length;
-    if (chosen.includes("Chess")) {
-        if (part.gender === "Male" && chessMaleCount >= 1) return { ok: false, message: "Only one male in Chess singles per team" };
-        if (part.gender === "Female" && chessFemaleCount >= 1) return { ok: false, message: "Only one female in Chess singles per team" };
+    // Chess & Carrom (Singles): one player per gender per age class
+    const chessCountSameGender = sameAgeClass.filter(p => p.gender === part.gender && (p.sports || []).includes("Chess")).length;
+    if (chosen.includes("Chess") && chessCountSameGender >= 1) {
+        return { ok: false, message: `Only one ${part.gender.toLowerCase()} player allowed in Chess for this age class` };
+    }
+    const carromSinglesCountSameGender = sameAgeClass.filter(p => p.gender === part.gender && (p.sports || []).includes("Carrom (Singles)")).length;
+    if (chosen.includes("Carrom (Singles)") && carromSinglesCountSameGender >= 1) {
+        return { ok: false, message: `Only one ${part.gender.toLowerCase()} player allowed in Carrom (Singles) for this age class` };
     }
 
-    const carromMaleCount = teamExisting.filter(p => p.gender === "Male" && (p.sports || []).includes("Carrom (Singles)")).length;
-    const carromFemaleCount = teamExisting.filter(p => p.gender === "Female" && (p.sports || []).includes("Carrom (Singles)")).length;
-    if (chosen.includes("Carrom (Singles)")) {
-        if (part.gender === "Male" && carromMaleCount >= 1) return { ok: false, message: "Only one male in Carrom singles per team" };
-        if (part.gender === "Female" && carromFemaleCount >= 1) return { ok: false, message: "Only one female in Carrom singles per team" };
+    // Badminton rules per age class: max 2 singles per gender; only 1 doubles/mixed team in age class
+    const bdSinglesCountSameGender = sameAgeClass.filter(p => p.gender === part.gender && (p.sports || []).includes("Badminton (Singles)")).length;
+    if (chosen.includes("Badminton (Singles)") && bdSinglesCountSameGender >= 2) {
+        return { ok: false, message: `Only two ${part.gender.toLowerCase()} badminton singles allowed for this age class` };
     }
+    const bdDoublesExistsInAgeClass = sameAgeClass.some(p => (p.sports || []).some(s => s === "Badminton (Doubles)" || s === "Badminton (Mixed Doubles)"));
+    if ((chosen.includes("Badminton (Doubles)") || chosen.includes("Badminton (Mixed Doubles)")) && bdDoublesExistsInAgeClass) {
+        return { ok: false, message: `Only one badminton doubles/mixed-doubles team allowed for this age class` };
+    }
+
+    // Table Tennis rules per age class: max 2 singles per gender; only 1 doubles/mixed team in age class
+    const ttSinglesCountSameGender = sameAgeClass.filter(p => p.gender === part.gender && (p.sports || []).includes("Table Tennis(Singles)")).length;
+    if (chosen.includes("Table Tennis(Singles)") && ttSinglesCountSameGender >= 2) {
+        return { ok: false, message: `Only two ${part.gender.toLowerCase()} table tennis singles allowed for this age class` };
+    }
+    const ttDoublesExistsInAgeClass = sameAgeClass.some(p => (p.sports || []).some(s => s === "Table Tennis(Doubles)" || s === "Table Tennis (Mix Doubles)"));
+    if ((chosen.includes("Table Tennis(Doubles)") || chosen.includes("Table Tennis (Mix Doubles)")) && ttDoublesExistsInAgeClass) {
+        return { ok: false, message: `Only one table tennis doubles/mixed-doubles team allowed for this age class` };
+    }
+
+    // Keep other earlier constraints (example: only one per team for certain events if required)
+    // (This function focuses on the new per-age-class rules requested.)
 
     return { ok: true };
 }
 
-// ---------- CSV helpers ----------
+// -------------------- CSV helpers --------------------
 function escapeCsvValue(value) {
     if (value === null || value === undefined) return '';
     if (Array.isArray(value)) value = value.join(';');
@@ -187,9 +260,9 @@ function downloadCSV(rows = [], filename = 'registrations.csv') {
     URL.revokeObjectURL(url);
 }
 
-// ------------- App Root -------------
+// -------------------- App --------------------
 export default function App() {
-    const [user, setUser] = useState(null); // {type:'team', teamId} or {type:'admin', role}
+    const [user, setUser] = useState(null);
     const [loginMessage, setLoginMessage] = useState("");
 
     function handleLogin(username, password) {
@@ -204,17 +277,9 @@ export default function App() {
     return (
         <div className="app-root">
             <header className="app-header">
-                <div className="brand">
-                    <div className="brand-icon">🌲</div>
-                    <div><h1>26th State Level Sports & Duty Meet, 2025 — Registration Portal</h1></div>
-                </div>
+                <div className="brand"><div className="brand-icon">🌲</div><div><h1>26th State Level Sports & Duty Meet, 2025 — Registration Portal</h1></div></div>
                 <div className="brand-right">
-                    {user ? (
-                        <div className="user-info">
-                            <span className="user-type">{user.type === "team" ? user.teamId : user.role}</span>
-                            <button className="btn small" onClick={handleLogout}>Logout</button>
-                        </div>
-                    ) : null}
+                    {user ? (<div className="user-info"><span className="user-type">{user.type === "team" ? user.teamId : user.role}</span><button className="btn small" onClick={handleLogout}>Logout</button></div>) : null}
                 </div>
             </header>
 
@@ -229,7 +294,7 @@ export default function App() {
     );
 }
 
-// ------------- Login -------------
+// -------------------- Login --------------------
 function Login({ onLogin, message }) {
     const [u, setU] = useState("");
     const [p, setP] = useState("");
@@ -245,9 +310,7 @@ function Login({ onLogin, message }) {
     );
 }
 
-// ------------- Team Manager -------------
-// This is the important changed component — it now fetches from Supabase and subscribes to realtime events.
-// It still keeps drafts/local submitted + pending queue for offline behaviour.
+// -------------------- Team Manager --------------------
 function TeamManager({ teamId }) {
     const [drafts, setDrafts] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_DRAFT_KEY(teamId)) || "[]") } catch { return [] } });
     const [submitted, setSubmitted] = useState(() => { try { return JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]") } catch { return [] } });
@@ -263,20 +326,13 @@ function TeamManager({ teamId }) {
     useEffect(() => { recomputeFees(); }, []);
     useEffect(() => { recomputeFees(); }, [drafts, submitted]);
 
-    // Fetch server rows for this team and reconcile local cache
     const fetchSubmittedFromServer = useCallback(async () => {
         try {
-            const { data, error } = await supabase
-                .from('participants')
-                .select('*')
-                .eq('team_id', teamId)
-                .order('timestamp', { ascending: false });
-
+            const { data, error } = await supabase.from('participants').select('*').eq('team_id', teamId).order('timestamp', { ascending: false });
             if (error) {
                 console.warn('Supabase fetch (TeamManager) error:', error);
                 return { ok: false, error: error.message || JSON.stringify(error) };
             }
-
             const normalized = (data || []).map(r => ({
                 id: r.id,
                 teamId: r.team_id,
@@ -294,29 +350,16 @@ function TeamManager({ teamId }) {
                 status: r.status || "Active"
             }));
 
-            // Reconcile strategy:
-            // - Prefer server rows (they are canonical). Keep any local-only Submitted rows that are not on server (they may be pending).
             const localSubmitted = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
             const serverIds = new Set(normalized.filter(r => r.id).map(r => String(r.id)));
             const localsNotOnServer = (localSubmitted || []).filter(r => !r.id || !serverIds.has(String(r.id)));
-
             const merged = [...normalized];
-
-            // Append local-only rows (they are likely pending). Avoid duplicates by timestamp.
             const existingTimestamps = new Set(merged.map(r => r.timestamp));
-            localsNotOnServer.forEach(r => {
-                if (!existingTimestamps.has(r.timestamp)) merged.push(r);
-            });
-
-            // Sort by timestamp descending for UI
-            merged.sort((a, b) => {
-                const ta = new Date(a.timestamp || 0).getTime();
-                const tb = new Date(b.timestamp || 0).getTime();
-                return tb - ta;
-            });
+            localsNotOnServer.forEach(r => { if (!existingTimestamps.has(r.timestamp)) merged.push(r); });
+            merged.sort((a, b) => (new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()));
 
             setSubmitted(merged);
-            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(merged)); } catch (e) { /* ignore */ }
+            try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(merged)); } catch (e) { }
 
             return { ok: true, count: merged.length };
         } catch (err) {
@@ -325,24 +368,21 @@ function TeamManager({ teamId }) {
         }
     }, [teamId]);
 
-    // Setup realtime subscription for this team's participants
     const setupRealtime = useCallback(async () => {
         try {
-            // Cleanup if existing
             if (realtimeSubRef.current && realtimeSubRef.current.unsubscribe) {
-                try { await realtimeSubRef.current.unsubscribe(); } catch (e) { /* ignore */ }
+                try { await realtimeSubRef.current.unsubscribe(); } catch (e) { }
                 realtimeSubRef.current = null;
             }
 
-            // Use Supabase Realtime: listen for INSERT/UPDATE/DELETE for this team
             const channel = supabase.channel(`participants_team_${teamId}`)
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `team_id=eq.${teamId}` }, payload => {
-                    // payload: { eventType, schema, table, commit_timestamp, new, old }
                     try {
-                        const evt = payload.eventType || payload.event;
+                        const evt = payload.eventType || payload.event || payload.type;
                         const newRow = payload.new || payload.record || null;
                         const oldRow = payload.old || null;
-                        if (evt === 'INSERT' || evt === 'INSERT' /* fallback */ || evt === 'INSERT') {
+
+                        if (evt === 'INSERT') {
                             if (!newRow) return;
                             const normalized = {
                                 id: newRow.id,
@@ -361,12 +401,8 @@ function TeamManager({ teamId }) {
                                 status: newRow.status || "Active"
                             };
                             setSubmitted(prev => {
-                                // avoid duplicate by id or timestamp
                                 const exists = prev.some(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) || (r.timestamp && normalized.timestamp && r.timestamp === normalized.timestamp));
-                                if (exists) {
-                                    // replace existing
-                                    return prev.map(r => ((r.id && normalized.id && String(r.id) === String(normalized.id)) || (r.timestamp && normalized.timestamp && r.timestamp === normalized.timestamp)) ? normalized : r);
-                                }
+                                if (exists) return prev.map(r => ((r.id && normalized.id && String(r.id) === String(normalized.id)) || (r.timestamp && normalized.timestamp && r.timestamp === normalized.timestamp)) ? normalized : r);
                                 const next = [normalized, ...prev];
                                 try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) { }
                                 return next;
@@ -392,10 +428,8 @@ function TeamManager({ teamId }) {
                             setSubmitted(prev => {
                                 const found = prev.some(r => r.id && normalized.id && String(r.id) === String(normalized.id));
                                 let next;
-                                if (found) {
-                                    next = prev.map(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) ? normalized : r);
-                                } else {
-                                    // maybe match by timestamp
+                                if (found) next = prev.map(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) ? normalized : r);
+                                else {
                                     const foundTs = prev.some(r => r.timestamp === normalized.timestamp);
                                     if (foundTs) next = prev.map(r => r.timestamp === normalized.timestamp ? normalized : r);
                                     else next = [normalized, ...prev];
@@ -404,11 +438,9 @@ function TeamManager({ teamId }) {
                                 return next;
                             });
                         } else if (evt === 'DELETE') {
-                            // payload.old may contain the deleted row
                             const idToRemove = (oldRow && oldRow.id) ? oldRow.id : (payload.old && payload.old.id ? payload.old.id : null);
                             const tsToRemove = (oldRow && oldRow.timestamp) ? oldRow.timestamp : null;
                             setSubmitted(prev => {
-                                // prefer marking as Deleted to keep history/UI
                                 const next = prev.map(r => {
                                     if ((idToRemove && r.id && String(r.id) === String(idToRemove)) || (!r.id && tsToRemove && r.timestamp === tsToRemove)) {
                                         return { ...r, status: "Deleted" };
@@ -419,7 +451,6 @@ function TeamManager({ teamId }) {
                                 return next;
                             });
                         } else {
-                            // fallback - do a full fetch to be safe
                             fetchSubmittedFromServer().catch(() => { });
                         }
                     } catch (err) {
@@ -436,7 +467,6 @@ function TeamManager({ teamId }) {
         }
     }, [teamId, fetchSubmittedFromServer]);
 
-    // initialize: fetch + setup realtime
     useEffect(() => {
         let mounted = true;
         (async () => {
@@ -487,10 +517,19 @@ function TeamManager({ teamId }) {
         setDrafts(prev => {
             const copy = prev.slice();
             copy[idx] = { ...copy[idx], ...patch };
-            if (patch.gender && copy[idx].ageClass) {
-                const allowed = (AGE_CLASSES_MASTER[patch.gender] || []).map(a => a.id);
+
+            // If gender or age changed, ensure ageClass still valid
+            if (patch.gender || patch.age) {
+                const allowed = getAllowedAgeClasses(copy[idx].gender, copy[idx].age).map(a => a.id);
                 if (!allowed.includes(copy[idx].ageClass)) copy[idx].ageClass = "";
             }
+
+            // If ageClass changed, filter sports to allowed ones
+            if (patch.ageClass) {
+                const allowedSet = new Set(allowedSportsFor(copy[idx].gender, copy[idx].ageClass));
+                copy[idx].sports = (copy[idx].sports || []).map(s => allowedSet.has(s) ? s : "");
+            }
+
             return copy;
         });
     }
@@ -508,7 +547,7 @@ function TeamManager({ teamId }) {
         setMessage("");
     }
 
-    // Pending queue helpers (unchanged)
+    // pending queue helpers
     function enqueuePending(team, payload) {
         try {
             const key = LS_PENDING_KEY(team);
@@ -526,7 +565,7 @@ function TeamManager({ teamId }) {
         } catch (e) { console.error('remove pending failed', e); }
     }
 
-    // flushPending supports appendMultiple & requestDelete (keeps behavior)
+    // flush pending (appendMultiple, requestDelete)
     async function flushPending(team) {
         try {
             const key = LS_PENDING_KEY(team);
@@ -562,28 +601,18 @@ function TeamManager({ teamId }) {
                             console.error('flush appendMultiple failed (supabase):', error);
                             return { ok: false, error: error.message || JSON.stringify(error) };
                         }
-                        // success -> remove pending and refresh canonical rows
                         removePendingOne(team);
                         await fetchSubmittedFromServer();
                     } else if (item.action === 'requestDelete') {
                         const payload = item.payload || {};
                         if (payload.id) {
                             const { data, error } = await supabase.from('participants').update({ status: 'Requested' }).eq('id', payload.id).select();
-                            if (error) {
-                                console.error('flush requestDelete by id failed:', error);
-                                return { ok: false, error: error.message || JSON.stringify(error) };
-                            }
+                            if (error) { console.error('flush requestDelete by id failed:', error); return { ok: false, error: error.message || JSON.stringify(error) }; }
                             removePendingOne(team);
                             await fetchSubmittedFromServer();
                         } else if (payload.timestamp && payload.teamId) {
-                            const { data, error } = await supabase.from('participants').update({ status: 'Requested' })
-                                .eq('team_id', payload.teamId)
-                                .eq('timestamp', payload.timestamp)
-                                .select();
-                            if (error) {
-                                console.error('flush requestDelete by timestamp failed:', error);
-                                return { ok: false, error: error.message || JSON.stringify(error) };
-                            }
+                            const { data, error } = await supabase.from('participants').update({ status: 'Requested' }).eq('team_id', payload.teamId).eq('timestamp', payload.timestamp).select();
+                            if (error) { console.error('flush requestDelete by timestamp failed:', error); return { ok: false, error: error.message || JSON.stringify(error) }; }
                             removePendingOne(team);
                             await fetchSubmittedFromServer();
                         } else {
@@ -606,7 +635,6 @@ function TeamManager({ teamId }) {
         }
     }
 
-    // submitAll: send to supabase, fallback to pending, and then refetch server rows to reconcile
     async function submitAll() {
         const errors = [];
         for (let i = 0; i < drafts.length; i++) {
@@ -615,10 +643,7 @@ function TeamManager({ teamId }) {
             const v = validateParticipant(p, otherTeam);
             if (!v.ok) errors.push({ index: i, message: v.message });
         }
-        if (errors.length > 0) {
-            setMessage(`Validation failed: ${errors[0].message}`);
-            return;
-        }
+        if (errors.length > 0) { setMessage(`Validation failed: ${errors[0].message}`); return; }
 
         const insertRows = drafts.map(d => {
             const ageVal = (d.age === "" || d.age === null || d.age === undefined) ? null : parseInt(d.age, 10);
@@ -643,7 +668,6 @@ function TeamManager({ teamId }) {
         setLoading(true);
         try {
             const { data, error } = await supabase.from('participants').insert(insertRows).select();
-
             if (error) {
                 console.error('Supabase insert error:', error);
                 enqueuePending(teamId, { action: 'appendMultiple', rows: drafts.map(d => ({ ...d })) });
@@ -655,7 +679,6 @@ function TeamManager({ teamId }) {
                 const serverMsg = error.message || (error.error ? error.error : JSON.stringify(error));
                 setMessage('Error saving to server: ' + serverMsg);
             } else {
-                // server returned canonical rows -> merge
                 const mapped = (data || []).map(r => ({
                     id: r.id,
                     teamId: r.team_id,
@@ -673,7 +696,6 @@ function TeamManager({ teamId }) {
                     status: r.status || "Active"
                 }));
 
-                // Merge mapped rows into submitted (replace placeholders by timestamp if match)
                 setSubmitted(prev => {
                     const prevCopy = prev.slice();
                     mapped.forEach(m => {
@@ -688,18 +710,14 @@ function TeamManager({ teamId }) {
                 setMessage("Saved to server!");
             }
 
-            // clear drafts & recompute fees
             setDrafts([]);
             recomputeFees();
 
-            // attempt to flush pending and then fetch canonical rows
             try {
                 const r = await flushPending(teamId);
                 await fetchSubmittedFromServer();
-                if (r && r.ok && r.count > 0) {
-                    setMessage(prev => prev + " Pending actions flushed.");
-                }
-            } catch (e) { /* ignore */ }
+                if (r && r.ok && r.count > 0) setMessage(prev => prev + " Pending actions flushed.");
+            } catch (e) { }
 
         } catch (err) {
             console.error('submitAll fatal', err);
@@ -709,27 +727,30 @@ function TeamManager({ teamId }) {
         }
     }
 
-    // requestDelete: try server update; else enqueue pending requestDelete; always mark locally as Requested
+    useEffect(() => {
+        flushPending(teamId).catch(() => { });
+        const interval = setInterval(() => { flushPending(teamId).catch(() => { }); }, 60000);
+        return () => clearInterval(interval);
+    }, [teamId]);
+
     function requestDelete(row) {
         if (!row) { setMessage("Row missing"); return; }
         if (row.status === "Requested" || row.status === "Deleted") return;
         const reason = prompt("Enter brief reason for deletion (optional):");
         if (reason === null) return;
 
-        // optimistic local update
         setSubmitted(prev => {
             const updated = prev.map(r => ((r.id && row.id && String(r.id) === String(row.id)) || (!r.id && r.timestamp === row.timestamp)) ? { ...r, status: "Requested" } : r);
             try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(updated)); } catch (e) { }
             return updated;
         });
-        // record delete requests locally (for admin logs)
+
         try {
             const saved = JSON.parse(localStorage.getItem(LS_DELETE_REQS) || "[]");
             saved.push({ reqId: genReqId(), rowId: row.id || null, teamId, name: row.name || "", timestamp: row.timestamp || null, reason, requestedAt: new Date().toISOString() });
             localStorage.setItem(LS_DELETE_REQS, JSON.stringify(saved));
         } catch (e) { }
 
-        // attempt server update
         if (row.id) {
             (async () => {
                 try {
@@ -740,7 +761,6 @@ function TeamManager({ teamId }) {
                         setMessage("Deletion requested locally; will retry server update.");
                     } else {
                         setMessage("Deletion requested and saved on server.");
-                        // fetch server to sync
                         await fetchSubmittedFromServer();
                     }
                 } catch (err) {
@@ -755,7 +775,6 @@ function TeamManager({ teamId }) {
         }
     }
 
-    // manual "Sync" button for users
     const manualSync = async () => {
         setMessage("Syncing with server...");
         const r = await fetchSubmittedFromServer();
@@ -772,9 +791,7 @@ function TeamManager({ teamId }) {
         <div className="panel team-manager">
             <div className="panel-header">
                 <h2>Team Manager — {teamId}</h2>
-                <div className="header-right">
-                    <div className="small-muted">Total: {totalParticipants} | Fee: {formatINR(fees.total)}</div>
-                </div>
+                <div className="header-right"><div className="small-muted">Total: {totalParticipants} | Fee: {formatINR(fees.total)}</div></div>
             </div>
 
             <div className="grid-2">
@@ -803,53 +820,62 @@ function TeamManager({ teamId }) {
                 </div>
             </div>
 
-            {/* Drafts editor */}
             {drafts.length === 0 ? (
                 <div className="card"><h4>No draft slots. Generate slots to add participants.</h4></div>
             ) : (
                 <div className="card">
                     <h3>Draft Participants</h3>
-                    {drafts.map((d, idx) => (
-                        <div key={d.__localId || d.timestamp || idx} className="participant-card">
-                            <div className="participant-header"><div>Participant #{idx + 1}</div><div className="muted">{d.timestamp}</div></div>
+                    {drafts.map((d, idx) => {
+                        const ageClassOptions = getAllowedAgeClasses(d.gender, d.age);
+                        const sportsOptions = allowedSportsFor(d.gender, d.ageClass);
+                        return (
+                            <div key={d.__localId || d.timestamp || idx} className="participant-card">
+                                <div className="participant-header"><div>Participant #{idx + 1}</div><div className="muted">{d.timestamp}</div></div>
 
-                            <div className="grid-3">
-                                <div><label>Full name <span className="required">*</span></label><input value={d.name} onChange={e => updateDraft(idx, { name: e.target.value })} /></div>
-                                <div><label>Gender <span className="required">*</span></label><select value={d.gender} onChange={e => updateDraft(idx, { gender: e.target.value })}><option value="">Select gender</option><option>Male</option><option>Female</option></select></div>
-                                <div><label>Age <span className="required">*</span></label><input type="number" min="12" max="120" value={d.age} onChange={e => updateDraft(idx, { age: e.target.value })} /></div>
-                            </div>
-
-                            <div className="grid-3">
-                                <div><label>Designation <span className="required">*</span></label><select value={d.designation} onChange={e => updateDraft(idx, { designation: e.target.value })}><option value="">Select</option>{DESIGNATIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
-                                <div><label>Phone <span className="required">*</span></label><input value={d.phone} onChange={e => updateDraft(idx, { phone: e.target.value })} /></div>
-                                <div><label>Blood Type <span className="required">*</span></label><select value={d.blood} onChange={e => updateDraft(idx, { blood: e.target.value })}><option value="">Select</option>{BLOOD_TYPES.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
-                            </div>
-
-                            <div className="grid-3">
-                                <div><label>Age class <span className="required">*</span></label><select value={d.ageClass} onChange={e => updateDraft(idx, { ageClass: e.target.value })}><option value="">Select</option>{(d.gender ? (AGE_CLASSES_MASTER[d.gender] || []) : []).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}</select></div>
-                                <div><label>Veg / Non-Veg <span className="required">*</span></label><select value={d.vegNon} onChange={e => updateDraft(idx, { vegNon: e.target.value })}><option value="">Select</option><option>Veg</option><option>Non Veg</option></select></div>
-                                <div><label>Upload profile photo <span className="required">*</span> <span className="muted small">JPG/PNG ≤200KB</span></label><input type="file" accept="image/jpeg,image/png" onChange={async e => { const f = e.target.files && e.target.files[0]; if (f) await handlePhotoChange(idx, f); }} />{d.photoBase64 && <img src={d.photoBase64} alt="preview" className="photo-thumb" />}</div>
-                            </div>
-
-                            <div>
-                                <label>Select up to 3 sports <span className="required">*</span></label>
                                 <div className="grid-3">
-                                    {[0, 1, 2].map(i => (
-                                        <select key={i} value={d.sports[i] || ""} onChange={e => { const arr = (d.sports || ["", "", ""]).slice(); arr[i] = e.target.value; updateDraft(idx, { sports: arr }); }}>
-                                            <option value="">-- Sport #{i + 1} --</option>
-                                            {SPORTS.map(sp => <option key={sp} value={sp}>{sp}</option>)}
+                                    <div><label>Full name <span className="required">*</span></label><input value={d.name} onChange={e => updateDraft(idx, { name: e.target.value })} /></div>
+                                    <div><label>Gender <span className="required">*</span></label><select value={d.gender} onChange={e => updateDraft(idx, { gender: e.target.value })}><option value="">Select gender</option><option>Male</option><option>Female</option></select></div>
+                                    <div><label>Age <span className="required">*</span></label><input type="number" min="12" max="120" value={d.age} onChange={e => updateDraft(idx, { age: e.target.value })} /></div>
+                                </div>
+
+                                <div className="grid-3">
+                                    <div><label>Designation <span className="required">*</span></label><select value={d.designation} onChange={e => updateDraft(idx, { designation: e.target.value })}><option value="">Select</option>{DESIGNATIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
+                                    <div><label>Phone <span className="required">*</span></label><input value={d.phone} onChange={e => updateDraft(idx, { phone: e.target.value })} /></div>
+                                    <div><label>Blood Type <span className="required">*</span></label><select value={d.blood} onChange={e => updateDraft(idx, { blood: e.target.value })}><option value="">Select</option>{BLOOD_TYPES.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+                                </div>
+
+                                <div className="grid-3">
+                                    <div>
+                                        <label>Age class <span className="required">*</span></label>
+                                        <select value={d.ageClass} onChange={e => updateDraft(idx, { ageClass: e.target.value })}>
+                                            <option value="">Select</option>
+                                            {ageClassOptions.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                                         </select>
-                                    ))}
+                                    </div>
+                                    <div><label>Veg / Non-Veg <span className="required">*</span></label><select value={d.vegNon} onChange={e => updateDraft(idx, { vegNon: e.target.value })}><option value="">Select</option><option>Veg</option><option>Non Veg</option></select></div>
+                                    <div><label>Upload profile photo <span className="required">*</span> <span className="muted small">JPG/PNG ≤200KB</span></label><input type="file" accept="image/jpeg,image/png" onChange={async e => { const f = e.target.files && e.target.files[0]; if (f) await handlePhotoChange(idx, f); }} />{d.photoBase64 && <img src={d.photoBase64} alt="preview" className="photo-thumb" />}</div>
+                                </div>
+
+                                <div>
+                                    <label>Select up to 3 sports <span className="required">*</span></label>
+                                    <div className="grid-3">
+                                        {[0, 1, 2].map(i => (
+                                            <select key={i} value={d.sports[i] || ""} onChange={e => { const arr = (d.sports || ["", "", ""]).slice(); arr[i] = e.target.value; updateDraft(idx, { sports: arr }); }}>
+                                                <option value="">-- Sport #{i + 1} --</option>
+                                                {sportsOptions.map(sp => <option key={sp} value={sp}>{sp}</option>)}
+                                            </select>
+                                        ))}
+                                    </div>
+                                    <div className="muted small">Allowed sports shown based on selected Age class & Gender.</div>
+                                </div>
+
+                                <div className="row gap">
+                                    <button className="btn" onClick={() => removeDraft(idx)}>Remove</button>
+                                    <div className="muted">Validation: {(() => { const others = submitted.concat(drafts.slice(0, idx)).concat(drafts.slice(idx + 1)); const v = validateParticipant(d, others); return v.ok ? "OK" : v.message; })()}</div>
                                 </div>
                             </div>
-
-                            <div className="row gap">
-                                <button className="btn" onClick={() => removeDraft(idx)}>Remove</button>
-                                <div className="muted">Validation: {(() => { const others = submitted.concat(drafts.slice(0, idx)).concat(drafts.slice(idx + 1)); const v = validateParticipant(d, others); return v.ok ? "OK" : v.message; })()}</div>
-                            </div>
-                        </div>
-                    ))}
-
+                        );
+                    })}
                     <div className="row gap" style={{ marginTop: 12 }}>
                         <button className="btn primary" onClick={submitAll} disabled={loading || drafts.length === 0}>Submit All</button>
                         <button className="btn" onClick={() => { setDrafts([]); setMessage("Draft cleared"); }}>Clear Draft</button>
@@ -857,7 +883,6 @@ function TeamManager({ teamId }) {
                 </div>
             )}
 
-            {/* Submitted table */}
             <div className="card">
                 <h3>Combined Participants (Submitted + Draft)</h3>
                 <div className="table-scroll small">
@@ -892,11 +917,12 @@ function TeamManager({ teamId }) {
     );
 }
 
-// ------------- Admin Dashboard (unchanged except uses DB load) -------------
+// -------------------- Admin Dashboard --------------------
 function AdminDashboard() {
     const [rows, setRows] = useState([]);
     const [teamFilter, setTeamFilter] = useState("");
     const [statusFilter, setStatusFilter] = useState("");
+    const [sportFilter, setSportFilter] = useState("");
     const [message, setMessage] = useState("");
 
     const fetchFromSupabase = useCallback(async () => {
@@ -948,7 +974,7 @@ function AdminDashboard() {
         (async () => {
             const sup = await fetchFromSupabase();
             if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows (offline or Supabase error)."); }
-            else { setMessage("Loaded rows from Supabase."); }
+            else setMessage("Loaded rows from Supabase.");
         })();
     }, [fetchFromSupabase, fetchRowsLocal]);
 
@@ -985,9 +1011,14 @@ function AdminDashboard() {
     }
 
     const teams = Array.from(new Set((rows || []).map(r => r.teamId))).sort();
+
     const filtered = (rows || []).filter(r => {
         if (teamFilter && r.teamId !== teamFilter) return false;
         if (statusFilter && r.status !== statusFilter) return false;
+        if (sportFilter && sportFilter !== "") {
+            const s = r.sports || [];
+            if (!s.includes(sportFilter)) return false;
+        }
         return true;
     });
 
@@ -1016,7 +1047,10 @@ function AdminDashboard() {
 
             <div className="filters">
                 <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)}><option value="">All Teams</option>{teams.map(t => <option key={t} value={t}>{t}</option>)}</select>
+
                 <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">All Statuses</option><option value="Active">Active</option><option value="Requested">Requested</option><option value="Deleted">Deleted</option></select>
+
+                <select value={sportFilter} onChange={e => setSportFilter(e.target.value)}><option value="">All Sports</option>{SPORTS.map(s => <option key={s} value={s}>{s}</option>)}</select>
             </div>
 
             <div className="table-scroll">
@@ -1025,7 +1059,14 @@ function AdminDashboard() {
                     <tbody>
                         {filtered.map((r, i) => (
                             <tr key={r.id || r.timestamp || i} className={r.status === "Deleted" ? "row-deleted" : ""}>
-                                <td>{i + 1}</td><td>{r.teamId}</td><td>{r.name}</td><td>{r.gender}</td><td>{r.age}</td><td>{(r.sports || []).filter(Boolean).join(", ")}</td><td>{r.status || "Active"}</td><td>{r.id || "-"}</td>
+                                <td>{i + 1}</td>
+                                <td>{r.teamId}</td>
+                                <td>{r.name}</td>
+                                <td>{r.gender}</td>
+                                <td>{r.age}</td>
+                                <td>{(r.sports || []).filter(Boolean).join(", ")}</td>
+                                <td>{r.status || "Active"}</td>
+                                <td>{r.id || "-"}</td>
                                 <td>{r.status === "Requested" ? <button className="btn" onClick={() => approveDelete(r)}>Approve Delete</button> : <span className="muted">—</span>}</td>
                             </tr>
                         ))}

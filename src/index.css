@@ -108,7 +108,7 @@ body::before {
 
 .app-header h1, .header h1 {
     margin: 0;
-    font-size: 1.25rem;
+    font-size: 2rem;
     color: var(--accent-2);
     letter-spacing: -0.2px;
 }
