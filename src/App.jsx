@@ -2,6 +2,7 @@
     import React, { useEffect, useState, useCallback, useRef } from "react";
     import './index.css';
     import { supabase } from './supabaseClient';
+    import logo from './png.png';
 
     /*
       Full patched App.jsx
@@ -316,8 +317,13 @@
         <div className="app-root">
           <header className="app-header">
             <div className="brand">
-              <div className="brand-icon">🌲</div>
-              <div><h1>26th State Level Forest Sports & Duty Meet, 2025 — Registration Portal</h1></div>
+              <div className="brand-icon">
+                <img src={logo} alt="Chamba logo" style={{width:"150px",height:"150px",objectFit:"contain"}} />
+              </div>
+              <h1>
+              <div>26th H.P. Forest Sports & Duty Meet, 2025</div>
+              <div style={{ fontSize: "0.95em", marginTop: "4px"}}>Registration Portal</div>
+              </h1>
             </div>
             <div className="brand-right">
               {user ? (
@@ -350,7 +356,7 @@
           <div className="form-row"><label>Username <span className="required">*</span></label><input value={u} onChange={e => setU(e.target.value)} /></div>
           <div className="form-row"><label>Password <span className="required">*</span></label><input type="password" value={p} onChange={e => setP(e.target.value)} /></div>
           <div className="form-row"><button className="btn primary" onClick={() => onLogin(u, p)}>Login</button></div>
-          <div className="muted">Demo team usernames: chamba, solan, bilaspur, ...  Admins: admin1, admin2, admin3</div>
+          <div className="muted">Forgot Credentials? Contact Office of DCF Chamba.</div>
           {message && <div className="error-text">{message}</div>}
         </div>
       );
@@ -971,165 +977,276 @@
     );
 }
 
-// -------------------- Admin Dashboard --------------------
+// -------------------- Admin Dashboard (updated: photo download + realtime) --------------------
 function AdminDashboard() {
-    const [rows, setRows] = useState([]);
-    const [teamFilter, setTeamFilter] = useState("");
-    const [statusFilter, setStatusFilter] = useState("");
-    const [sportFilter, setSportFilter] = useState("");
-    const [message, setMessage] = useState("");
+  const [rows, setRows] = useState([]);
+  const [teamFilter, setTeamFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [sportFilter, setSportFilter] = useState("");
+  const [message, setMessage] = useState("");
+  const realtimeRef = useRef(null);
 
-    const fetchFromSupabase = useCallback(async () => {
-        try {
-            const { data, error } = await supabase.from('participants').select('*').order('timestamp', { ascending: false });
-            if (error) {
-                console.warn('Supabase fetch error, falling back to local:', error);
-                return null;
-            }
-            const normalized = (data || []).map(r => ({
-                id: r.id,
-                teamId: r.team_id,
-                name: r.name,
-                gender: r.gender,
-                age: r.age,
-                designation: r.designation,
-                phone: r.phone,
-                blood: r.blood,
-                ageClass: r.age_class,
-                vegNon: r.veg_non,
-                sports: r.sports,
-                photoBase64: r.photo_base64,
-                timestamp: r.timestamp,
-                status: r.status || "Active"
-            }));
-            setRows(normalized);
-            return normalized;
-        } catch (err) {
-            console.error('fetchFromSupabase failed', err);
-            return null;
-        }
-    }, []);
+  // fetch all rows from Supabase
+  const fetchFromSupabase = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('participants')
+        .select('*')
+        .order('timestamp', { ascending: false });
 
-    const fetchRowsLocal = useCallback(() => {
-        try {
-            const all = [];
-            TEAM_CREDENTIALS.forEach(t => {
-                try {
-                    const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(t.teamId)) || "[]");
-                    if (Array.isArray(s)) s.forEach(r => all.push({ ...r, teamId: t.teamId }));
-                } catch (e) { }
-            });
-            setRows(all);
-            return all;
-        } catch (err) { console.warn("Could not load local rows:", err); return []; }
-    }, []);
-
-    useEffect(() => {
-        (async () => {
-            const sup = await fetchFromSupabase();
-            if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows (offline or Supabase error)."); }
-            else setMessage("Loaded rows from Supabase.");
-        })();
-    }, [fetchFromSupabase, fetchRowsLocal]);
-
-    async function approveDelete(reqRow) {
-        const ok = window.confirm(`Approve deletion for ${reqRow.name} (Team ${reqRow.teamId})?`);
-        if (!ok) return;
-        try {
-            if (reqRow.id) {
-                const { data, error } = await supabase.from('participants').update({ status: 'Deleted' }).eq('id', reqRow.id);
-                if (error) console.warn('Supabase update failed; falling back to local mark', error);
-            } else {
-                console.warn('No id present for row; will mark locally only.');
-            }
-
-            try {
-                const team = reqRow.teamId;
-                const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(team)) || "[]");
-                const updated = (s || []).map(r => {
-                    if ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) {
-                        return { ...r, status: "Deleted" };
-                    }
-                    return r;
-                });
-                localStorage.setItem(LS_SUBMITTED_KEY(team), JSON.stringify(updated));
-            } catch (e) { console.error(e); }
-
-            setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) ? { ...r, status: "Deleted" } : r));
-            try { window.dispatchEvent(new CustomEvent("chamba:rowDeleted", { detail: { rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null } })); } catch (e) { }
-            setMessage("Deletion approved (Supabase attempted; marked Deleted locally).");
-        } catch (err) {
-            console.error(err);
-            setMessage("Error while approving delete.");
-        }
+      if (error) {
+        console.warn('Supabase fetch error (Admin):', error);
+        return null;
+      }
+      const normalized = (data || []).map(r => ({
+        id: r.id,
+        teamId: r.team_id,
+        name: r.name,
+        gender: r.gender,
+        age: r.age,
+        designation: r.designation,
+        phone: r.phone,
+        blood: r.blood,
+        ageClass: r.age_class,
+        vegNon: r.veg_non,
+        sports: r.sports,
+        photoBase64: r.photo_base64,
+        timestamp: r.timestamp,
+        status: r.status || "Active"
+      }));
+      setRows(normalized);
+      return normalized;
+    } catch (err) {
+      console.error('fetchFromSupabase failed (Admin)', err);
+      return null;
     }
+  }, []);
 
-    const teams = Array.from(new Set((rows || []).map(r => r.teamId))).sort();
+  // fallback: load aggregated localStorage rows (teams store theirs locally)
+  const fetchRowsLocal = useCallback(() => {
+    try {
+      const all = [];
+      TEAM_CREDENTIALS.forEach(t => {
+        try {
+          const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(t.teamId)) || "[]");
+          if (Array.isArray(s)) s.forEach(r => all.push({ ...r, teamId: t.teamId }));
+        } catch (e) { /* ignore */ }
+      });
+      setRows(all);
+      return all;
+    } catch (err) { console.warn("Could not load local rows (Admin):", err); return []; }
+  }, []);
 
-    const filtered = (rows || []).filter(r => {
-        if (teamFilter && r.teamId !== teamFilter) return false;
-        if (statusFilter && r.status !== statusFilter) return false;
-        if (sportFilter && sportFilter !== "") {
-            const s = r.sports || [];
-            if (!s.includes(sportFilter)) return false;
+  // subscribe to realtime changes so admin sees updates live across devices
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const sup = await fetchFromSupabase();
+      if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows (Supabase fetch failed)."); }
+      else setMessage("Loaded rows from Supabase.");
+
+      try {
+        // unsubscribe existing if any
+        if (realtimeRef.current && realtimeRef.current.unsubscribe) {
+          await realtimeRef.current.unsubscribe().catch(()=>{});
+          realtimeRef.current = null;
         }
-        return true;
-    });
 
-    function exportCSV() {
-        const header = ['teamId', 'name', 'gender', 'age', 'designation', 'phone', 'blood', 'ageClass', 'vegNon', 'sports', 'photoBase64', 'timestamp', 'id', 'status'];
-        const csvRows = [header, ...filtered.map(r => [r.teamId, r.name, r.gender, r.age, r.designation, r.phone, r.blood, r.ageClass, r.vegNon, JSON.stringify(r.sports || []), r.photoBase64 ? '[BASE64]' : '', r.timestamp || '', r.id || '', r.status || ''])];
-        const csvContent = csvRows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.setAttribute("download", "chamba_registrations.csv");
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        // create a channel listening to all changes in participants table
+        const channel = supabase
+          .channel('public:participants:admin')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, payload => {
+            // simply refetch on any change (keeps logic simple and consistent)
+            fetchFromSupabase().catch(() => {});
+          });
+
+        const sub = await channel.subscribe();
+        realtimeRef.current = channel;
+      } catch (e) {
+        console.warn('Admin realtime subscription failed', e);
+      }
+    })();
+
+    return () => {
+      if (realtimeRef.current && realtimeRef.current.unsubscribe) {
+        realtimeRef.current.unsubscribe().catch(()=>{});
+        realtimeRef.current = null;
+      }
+    };
+  }, [fetchFromSupabase, fetchRowsLocal]);
+
+  // Approve deletion (keeps current behavior but tries to update supabase)
+  async function approveDelete(reqRow) {
+    const ok = window.confirm(`Approve deletion for ${reqRow.name} (Team ${reqRow.teamId})?`);
+    if (!ok) return;
+    try {
+      if (reqRow.id) {
+        const { data, error } = await supabase.from('participants').update({ status: 'Deleted' }).eq('id', reqRow.id);
+        if (error) console.warn('Supabase update failed (approveDelete):', error);
+      } else {
+        console.warn('No id present for row; will mark locally only.');
+      }
+
+      // mark team local storage
+      try {
+        const team = reqRow.teamId;
+        const s = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(team)) || "[]");
+        const updated = (s || []).map(r => {
+          if ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) {
+            return { ...r, status: "Deleted" };
+          }
+          return r;
+        });
+        localStorage.setItem(LS_SUBMITTED_KEY(team), JSON.stringify(updated));
+      } catch (e) { console.error(e); }
+
+      // update admin UI state
+      setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) ? { ...r, status: "Deleted" } : r));
+
+      // notify team clients via event (team manager listens)
+      try { window.dispatchEvent(new CustomEvent("chamba:rowDeleted", { detail: { rowId: reqRow.id || null, teamId: reqRow.teamId || null, timestamp: reqRow.timestamp || null } })); } catch (e) {}
+
+      setMessage("Deletion approved (attempted server update; marked Deleted locally).");
+    } catch (err) {
+      console.error(err);
+      setMessage("Error while approving delete.");
     }
+  }
 
-    return (
-        <div className="panel admin-panel">
-            <div className="panel-header">
-                <h2>Admin Dashboard</h2>
-                <div className="header-actions">
-                    <button className="btn" onClick={async () => { const sup = await fetchFromSupabase(); if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows"); } else setMessage("Loaded from Supabase"); }}>Load</button>
-                    <button className="btn" onClick={exportCSV}>Download CSV</button>
-                </div>
-            </div>
+  // download photo helper: ensures server is checked if missing and then downloads
+  async function downloadPhoto(row) {
+    try {
+      setMessage("Preparing photo...");
 
-            <div className="filters">
-                <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)}><option value="">All Teams</option>{teams.map(t => <option key={t} value={t}>{t}</option>)}</select>
+      // prefer server copy if id present (get latest)
+      let photoB64 = row.photoBase64;
+      if ((!photoB64 || photoB64 === "") && row.id) {
+        const { data, error } = await supabase.from('participants').select('photo_base64').eq('id', row.id).single();
+        if (error) {
+          setMessage("Could not fetch photo from server: " + (error.message || JSON.stringify(error)));
+          return;
+        }
+        photoB64 = data && data.photo_base64;
+      }
 
-                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">All Statuses</option><option value="Active">Active</option><option value="Requested">Requested</option><option value="Deleted">Deleted</option></select>
+      if (!photoB64) {
+        setMessage("No photo available for this participant.");
+        return;
+      }
 
-                <select value={sportFilter} onChange={e => setSportFilter(e.target.value)}><option value="">All Sports</option>{SPORTS.map(s => <option key={s} value={s}>{s}</option>)}</select>
-            </div>
+      // if value is already a data URL, use it; if it's plain base64, assume JPEG
+      let dataUrl = photoB64;
+      if (!/^data:/i.test(photoB64)) {
+        // attempt to determine mime if possible (default jpeg)
+        dataUrl = `data:image/jpeg;base64,${photoB64}`;
+      }
 
-            <div className="table-scroll">
-                <table className="data-table">
-                    <thead><tr><th>#</th><th>Team</th><th>Name</th><th>Gender</th><th>Age</th><th>Sports</th><th>Status</th><th>ID</th><th>Action</th></tr></thead>
-                    <tbody>
-                        {filtered.map((r, i) => (
-                            <tr key={r.id || r.timestamp || i} className={r.status === "Deleted" ? "row-deleted" : ""}>
-                                <td>{i + 1}</td>
-                                <td>{r.teamId}</td>
-                                <td>{r.name}</td>
-                                <td>{r.gender}</td>
-                                <td>{r.age}</td>
-                                <td>{(r.sports || []).filter(Boolean).join(", ")}</td>
-                                <td>{r.status || "Active"}</td>
-                                <td>{r.id || "-"}</td>
-                                <td>{r.status === "Requested" ? <button className="btn" onClick={() => approveDelete(r)}>Approve Delete</button> : <span className="muted">—</span>}</td>
-                            </tr>
-                        ))}
-                        {filtered.length === 0 && <tr><td colSpan={9} className="muted">No rows</td></tr>}
-                    </tbody>
-                </table>
-            </div>
+      // fetch converted blob and trigger download
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const ext = blob.type && blob.type.split('/')[1] ? blob.type.split('/')[1].split('+')[0] : 'jpg';
+      const safeName = (row.name || 'participant').replace(/[^a-z0-9_\-\.]/gi, '_').slice(0,60);
+      const filename = `${row.teamId || 'team'}_${safeName}_${row.id || row.timestamp || Date.now()}.${ext}`;
 
-            {message && <div className="info-text">{message}</div>}
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+
+      setMessage("Photo downloaded");
+    } catch (err) {
+      console.error('downloadPhoto error', err);
+      setMessage("Error downloading photo: " + (err.message || String(err)));
+    }
+  }
+
+  // teams for filter dropdown
+  const teams = Array.from(new Set((rows || []).map(r => r.teamId))).sort();
+
+  // filter rows for display
+  const filtered = (rows || []).filter(r => {
+    if (teamFilter && r.teamId !== teamFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (sportFilter && sportFilter !== "") {
+      const s = r.sports || [];
+      if (!s.includes(sportFilter)) return false;
+    }
+    return true;
+  });
+
+  // CSV export (unchanged)
+  function exportCSV() {
+    const header = ['teamId','name','gender','age','designation','phone','blood','ageClass','vegNon','sports','photoBase64','timestamp','id','status'];
+    const csvRows = [header, ...filtered.map(r => [ r.teamId, r.name, r.gender, r.age, r.designation, r.phone, r.blood, r.ageClass, r.vegNon, JSON.stringify(r.sports || []), r.photoBase64 ? '[BASE64]' : '', r.timestamp || '', r.id || '', r.status || '' ])];
+    const csvContent = csvRows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", "chamba_registrations.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  return (
+    <div className="panel admin-panel">
+      <div className="panel-header">
+        <h2>Admin Dashboard</h2>
+        <div className="header-actions">
+          <button className="btn" onClick={async () => { const sup = await fetchFromSupabase(); if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows"); } else setMessage("Loaded from Supabase"); }}>Load</button>
+          <button className="btn" onClick={exportCSV}>Download CSV</button>
         </div>
-    );
+      </div>
+
+      <div className="filters">
+        <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)}><option value="">All Teams</option>{teams.map(t => <option key={t} value={t}>{t}</option>)}</select>
+
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">All Statuses</option><option value="Active">Active</option><option value="Requested">Requested</option><option value="Deleted">Deleted</option></select>
+
+        <select value={sportFilter} onChange={e => setSportFilter(e.target.value)}><option value="">All Sports</option>{SPORTS.map(s => <option key={s} value={s}>{s}</option>)}</select>
+      </div>
+
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Team</th><th>Name</th><th>Gender</th><th>Age</th><th>Sports</th><th>Status</th><th>Photo</th><th>ID</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r,i) => (
+              <tr key={r.id || r.timestamp || i} className={r.status === "Deleted" ? "row-deleted" : ""}>
+                <td>{i+1}</td>
+                <td>{r.teamId}</td>
+                <td>{r.name}</td>
+                <td>{r.gender}</td>
+                <td>{r.age}</td>
+                <td>{(r.sports || []).filter(Boolean).join(", ")}</td>
+                <td>{r.status || "Active"}</td>
+
+                {/* Photo column: thumbnail + Download button for Active participants */}
+                <td>
+                  {r.photoBase64 ? <img src={r.photoBase64} alt="thumb" className="photo-thumb" /> : <span className="muted">—</span>}
+                  <div style={{ marginTop: 6 }}>
+                    {r.status === "Active" ? <button className="btn small" onClick={() => downloadPhoto(r)}>Download Photo</button> : <span className="muted small">No download</span>}
+                  </div>
+                </td>
+
+                <td>{r.id || "-"}</td>
+                <td>
+                  {r.status === "Requested" ? <button className="btn" onClick={() => approveDelete(r)}>Approve Delete</button> : <span className="muted">—</span>}
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && <tr><td colSpan={10} className="muted">No rows</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {message && <div className="info-text">{message}</div>}
+    </div>
+  );
 }
