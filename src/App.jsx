@@ -378,6 +378,7 @@
       useEffect(() => { recomputeFees(); }, []);
       useEffect(() => { recomputeFees(); }, [drafts, submitted]);
 
+      // ------------------ Replace fetchSubmittedFromServer ------------------
       const fetchSubmittedFromServer = useCallback(async () => {
         try {
           const { data, error } = await supabase
@@ -391,35 +392,44 @@
             return { ok: false, error: error.message || JSON.stringify(error) };
           }
 
-          const normalized = (data || []).map(r => ({
-            id: r.id,
-            teamId: r.team_id,
-            name: r.name,
-            gender: r.gender,
-            age: r.age,
-            designation: r.designation,
-            phone: r.phone,
-            blood: r.blood,
-            ageClass: r.age_class,
-            vegNon: r.veg_non,
-            sports: r.sports,
-            photoBase64: r.photo_base64,
-            timestamp: r.timestamp,
-            status: r.status || "Active"
-          }));
+          // Normalize server rows and *treat server as authoritative*.
+          // IMPORTANT: Team Manager will NOT show rows with status === 'Deleted'
+          const normalizedServer = (data || [])
+            .map(r => ({
+              id: r.id,
+              teamId: r.team_id,
+              name: r.name,
+              gender: r.gender,
+              age: r.age,
+              designation: r.designation,
+              phone: r.phone,
+              blood: r.blood,
+              ageClass: r.age_class,
+              vegNon: r.veg_non,
+              sports: r.sports,
+              photoBase64: r.photo_base64,
+              timestamp: r.timestamp,
+              status: r.status || "Active"
+            }))
+            .filter(r => String(r.status).toLowerCase() !== 'deleted'); // hide deleted rows
 
-          const localSubmitted = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
-          const serverIds = new Set(normalized.filter(r => r.id).map(r => String(r.id)));
-          const localsNotOnServer = (localSubmitted || []).filter(r => !r.id || !serverIds.has(String(r.id)));
-          const merged = [...normalized];
-          const existingTimestamps = new Set(merged.map(r => r.timestamp));
-          localsNotOnServer.forEach(r => {
-            if (!existingTimestamps.has(r.timestamp)) merged.push(r);
+          // Keep any purely-local submitted entries that are not yet on server (no id and whose timestamp not in server)
+          const localSubmittedRaw = JSON.parse(localStorage.getItem(LS_SUBMITTED_KEY(teamId)) || "[]");
+          const serverTimestamps = new Set(normalizedServer.map(r => r.timestamp));
+          const serverIds = new Set(normalizedServer.filter(r => r.id).map(r => String(r.id)));
+          const localsNotOnServer = (localSubmittedRaw || []).filter(r => {
+            // keep local entry only if it has no server id and timestamp not present on server
+            const hasServerId = r.id && serverIds.has(String(r.id));
+            const tsMatchesServer = r.timestamp && serverTimestamps.has(r.timestamp);
+            return !hasServerId && !tsMatchesServer;
           });
-          merged.sort((a,b) => (new Date(b.timestamp||0).getTime() - new Date(a.timestamp||0).getTime()));
 
+          // Merge: server first (authoritative), then pure-local rows not yet on server
+          const merged = [...normalizedServer, ...localsNotOnServer];
+
+          // Save authoritative merged copy to state and localStorage
           setSubmitted(merged);
-          try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(merged)); } catch (e) {}
+          try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(merged)); } catch (e) { console.warn('localStorage write error', e); }
 
           return { ok: true, count: merged.length };
         } catch (err) {
@@ -428,21 +438,29 @@
         }
       }, [teamId]);
 
+
+      // ------------------ Replace setupRealtime ------------------
       const setupRealtime = useCallback(async () => {
         try {
+          // Unsubscribe previous channel if any
           if (realtimeSubRef.current && realtimeSubRef.current.unsubscribe) {
             try { await realtimeSubRef.current.unsubscribe(); } catch (e) {}
             realtimeSubRef.current = null;
           }
 
+          // Subscribe to changes for this team's participants
+          // Use filter on team_id so we only get relevant events
           const channel = supabase.channel(`participants_team_${teamId}`)
             .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `team_id=eq.${teamId}` }, payload => {
               try {
-                const evt = payload.eventType || payload.event || payload.type;
+                // Payload format may vary by supabase-js version; check common fields
+                const eventType = payload.eventType || payload.event || payload.type || '';
                 const newRow = payload.new || payload.record || null;
                 const oldRow = payload.old || null;
 
-                if (evt === 'INSERT') {
+                // If an UPDATE or INSERT happened on the server, refetch authoritative data
+                // but handle Deleted status quickly to minimize UI flicker:
+                if (eventType === 'INSERT') {
                   if (!newRow) return;
                   const normalized = {
                     id: newRow.id,
@@ -460,15 +478,40 @@
                     timestamp: newRow.timestamp,
                     status: newRow.status || "Active"
                   };
+                  // if server sent a row with status Deleted, ignore it; otherwise insert at top
+                  if (String(normalized.status).toLowerCase() === 'deleted') {
+                    // ensure it's not present locally
+                    setSubmitted(prev => {
+                      const next = prev.filter(r => !(r.id && normalized.id && String(r.id) === String(normalized.id)));
+                      try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                      return next;
+                    });
+                    return;
+                  }
                   setSubmitted(prev => {
-                    const exists = prev.some(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) || (r.timestamp && normalized.timestamp && r.timestamp === normalized.timestamp));
-                    if (exists) return prev.map(r => ((r.id && normalized.id && String(r.id) === String(normalized.id)) || (r.timestamp && normalized.timestamp && r.timestamp === normalized.timestamp)) ? normalized : r);
-                    const next = [normalized, ...prev];
+                    const exists = prev.some(r => r.id && normalized.id && String(r.id) === String(normalized.id));
+                    let next;
+                    if (exists) next = prev.map(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) ? normalized : r);
+                    else next = [normalized, ...prev];
                     try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
                     return next;
                   });
-                } else if (evt === 'UPDATE') {
+                  return;
+                }
+
+                if (eventType === 'UPDATE') {
                   if (!newRow) return;
+                  // If row became Deleted on server => remove it locally
+                  if (newRow.status && String(newRow.status).toLowerCase() === 'deleted') {
+                    setSubmitted(prev => {
+                      const next = prev.filter(r => !(r.id && newRow.id && String(r.id) === String(newRow.id)));
+                      try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                      return next;
+                    });
+                    return;
+                  }
+
+                  // Otherwise, replace or insert the updated row
                   const normalized = {
                     id: newRow.id,
                     teamId: newRow.team_id,
@@ -489,30 +532,27 @@
                     const found = prev.some(r => r.id && normalized.id && String(r.id) === String(normalized.id));
                     let next;
                     if (found) next = prev.map(r => (r.id && normalized.id && String(r.id) === String(normalized.id)) ? normalized : r);
-                    else {
-                      const foundTs = prev.some(r => r.timestamp === normalized.timestamp);
-                      if (foundTs) next = prev.map(r => r.timestamp === normalized.timestamp ? normalized : r);
-                      else next = [normalized, ...prev];
-                    }
+                    else next = [normalized, ...prev];
                     try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
                     return next;
                   });
-                } else if (evt === 'DELETE') {
-                  const idToRemove = (oldRow && oldRow.id) ? oldRow.id : (payload.old && payload.old.id ? payload.old.id : null);
-                  const tsToRemove = (oldRow && oldRow.timestamp) ? oldRow.timestamp : null;
-                  setSubmitted(prev => {
-                    const next = prev.map(r => {
-                      if ((idToRemove && r.id && String(r.id) === String(idToRemove)) || (!r.id && tsToRemove && r.timestamp === tsToRemove)) {
-                        return { ...r, status: "Deleted" };
-                      }
-                      return r;
-                    });
-                    try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
-                    return next;
-                  });
-                } else {
-                  fetchSubmittedFromServer().catch(()=>{});
+                  return;
                 }
+
+                if (eventType === 'DELETE') {
+                  // When Supabase issues a DELETE event, remove it locally too
+                  const removedId = (oldRow && oldRow.id) ? oldRow.id : (payload.old && payload.old.id ? payload.old.id : null);
+                  const removedTs = (oldRow && oldRow.timestamp) ? oldRow.timestamp : null;
+                  setSubmitted(prev => {
+                    const next = prev.filter(r => !((removedId && r.id && String(r.id) === String(removedId)) || (!r.id && removedTs && r.timestamp === removedTs)));
+                    try { localStorage.setItem(LS_SUBMITTED_KEY(teamId), JSON.stringify(next)); } catch (e) {}
+                    return next;
+                  });
+                  return;
+                }
+
+                // Fallback: any other event -> refetch authoritative server copy
+                fetchSubmittedFromServer().catch(()=>{});
               } catch (err) {
                 console.error('realtime payload handling error', err);
               }
@@ -526,6 +566,7 @@
           return { ok: false, error: err.message || String(err) };
         }
       }, [teamId, fetchSubmittedFromServer]);
+
 
       useEffect(() => {
         let mounted = true;
