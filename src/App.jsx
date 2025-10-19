@@ -356,7 +356,7 @@
           <div className="form-row"><label>Username <span className="required">*</span></label><input value={u} onChange={e => setU(e.target.value)} /></div>
           <div className="form-row"><label>Password <span className="required">*</span></label><input type="password" value={p} onChange={e => setP(e.target.value)} /></div>
           <div className="form-row"><button className="btn primary" onClick={() => onLogin(u, p)}>Login</button></div>
-          <div className="muted">Forgot Credentials? Contact Office of DCF Chamba.</div>
+          <div className="muted">Forgot Credentials? Contact us at sportsmeetchamba2025@gmail.com</div>
           {message && <div className="error-text">{message}</div>}
         </div>
       );
