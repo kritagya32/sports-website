@@ -341,7 +341,7 @@
             {user && user.type === "admin" && <AdminDashboard />}
           </main>
 
-          <footer className="app-footer"><div>© Chamba Forest Sports Meet</div></footer>
+          <footer className="app-footer"><div>© Kritagya Kumar</div></footer>
         </div>
       );
     }
