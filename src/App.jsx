@@ -1229,12 +1229,14 @@ function AdminDashboard() {
 
                 {/* Photo column: thumbnail + Download button for Active participants */}
                 <td>
-                  {r.photoBase64 ? <img src={r.photoBase64} alt="thumb" className="photo-thumb" /> : <span className="muted">—</span>}
                   <div style={{ marginTop: 6 }}>
-                    {r.status === "Active" ? <button className="btn small" onClick={() => downloadPhoto(r)}>Download Photo</button> : <span className="muted small">No download</span>}
+                    {r.status === "Active" ? (
+                      <button className="btn small" onClick={() => downloadPhoto(r)}>Download Photo</button>
+                    ) : (
+                      <span className="muted small">No download</span>
+                    )}
                   </div>
                 </td>
-
                 <td>{r.id || "-"}</td>
                 <td>
                   {r.status === "Requested" ? <button className="btn" onClick={() => approveDelete(r)}>Approve Delete</button> : <span className="muted">—</span>}
