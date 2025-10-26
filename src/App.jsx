@@ -977,25 +977,45 @@
     );
 }
 
-// -------------------- Admin Dashboard (updated: photo download + realtime) --------------------
+// -------------------- Admin Dashboard (pagination & team-scoped fetch) --------------------
 function AdminDashboard() {
-  const [rows, setRows] = useState([]);
-  const [teamFilter, setTeamFilter] = useState("");
+  const [rows, setRows] = useState([]); // current page rows
+  // default to first team in TEAM_CREDENTIALS so admin always sees one team at a time
+  const defaultTeam = TEAM_CREDENTIALS[0] && TEAM_CREDENTIALS[0].teamId ? TEAM_CREDENTIALS[0].teamId : "";
+  const [teamFilter, setTeamFilter] = useState(defaultTeam);
   const [statusFilter, setStatusFilter] = useState("");
   const [sportFilter, setSportFilter] = useState("");
   const [message, setMessage] = useState("");
   const realtimeRef = useRef(null);
 
-  // fetch all rows from Supabase
-  const fetchFromSupabase = useCallback(async () => {
-    try {
-      const { data, error } = await supabase
-        .from('participants')
-        .select('*')
-        .order('timestamp', { ascending: false });
+  // pagination states
+  const PAGE_SIZE = 20;
+  const [page, setPage] = useState(0); // zero-based
+  const [totalCount, setTotalCount] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
+  // builds a supabase query with filters applied
+  const buildQuery = useCallback(() => {
+    // request exact count; select all columns (could be changed to specific columns)
+    let query = supabase.from('participants').select('*', { count: 'exact' }).order('timestamp', { ascending: false });
+    if (teamFilter) query = query.eq('team_id', teamFilter);
+    if (statusFilter) query = query.eq('status', statusFilter);
+    if (sportFilter) {
+      // stored as array; use contains
+      query = query.contains('sports', [sportFilter]);
+    }
+    return query;
+  }, [teamFilter, statusFilter, sportFilter]);
+
+  // fetch page from supabase using range
+  const fetchPageFromSupabase = useCallback(async (pageToFetch = page) => {
+    try {
+      const from = pageToFetch * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      const query = buildQuery();
+      const { data, error, count } = await query.range(from, to);
       if (error) {
-        console.warn('Supabase fetch error (Admin):', error);
+        console.warn('Supabase paginated fetch error (Admin):', error);
         return null;
       }
       const normalized = (data || []).map(r => ({
@@ -1015,15 +1035,17 @@ function AdminDashboard() {
         status: r.status || "Active"
       }));
       setRows(normalized);
+      setTotalCount(typeof count === 'number' ? count : (data ? data.length : 0));
+      setMessage(`Loaded page ${pageToFetch + 1} / ${Math.max(1, Math.ceil((typeof count === 'number' ? count : (data ? data.length : 0)) / PAGE_SIZE))}`);
       return normalized;
     } catch (err) {
-      console.error('fetchFromSupabase failed (Admin)', err);
+      console.error('fetchPageFromSupabase failed (Admin)', err);
       return null;
     }
-  }, []);
+  }, [buildQuery, page]);
 
-  // fallback: load aggregated localStorage rows (teams store theirs locally)
-  const fetchRowsLocal = useCallback(() => {
+  // fallback: when supabase unavailable, build aggregated local list and paginate locally
+  const fetchPageLocal = useCallback((pageToFetch = page) => {
     try {
       const all = [];
       TEAM_CREDENTIALS.forEach(t => {
@@ -1032,48 +1054,69 @@ function AdminDashboard() {
           if (Array.isArray(s)) s.forEach(r => all.push({ ...r, teamId: t.teamId }));
         } catch (e) { /* ignore */ }
       });
-      setRows(all);
-      return all;
-    } catch (err) { console.warn("Could not load local rows (Admin):", err); return []; }
-  }, []);
+      // apply filters
+      const filtered = all.filter(r => {
+        if (teamFilter && r.teamId !== teamFilter) return false;
+        if (statusFilter && r.status !== statusFilter) return false;
+        if (sportFilter && sportFilter !== "") {
+          const s = r.sports || [];
+          if (!s.includes(sportFilter)) return false;
+        }
+        return true;
+      });
+      const total = filtered.length;
+      const from = pageToFetch * PAGE_SIZE;
+      const pageRows = filtered.slice(from, from + PAGE_SIZE);
+      setRows(pageRows);
+      setTotalCount(total);
+      setMessage(`Loaded local page ${pageToFetch + 1} / ${Math.max(1, Math.ceil(total / PAGE_SIZE))}`);
+      return pageRows;
+    } catch (err) {
+      console.warn("Could not load local rows (Admin):", err);
+      setRows([]);
+      setTotalCount(0);
+      return [];
+    }
+  }, [teamFilter, statusFilter, sportFilter, page]);
 
-  // subscribe to realtime changes so admin sees updates live across devices
+  // whenever filters change, reset to page 0
+  useEffect(() => {
+    setPage(0);
+  }, [teamFilter, statusFilter, sportFilter]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const sup = await fetchFromSupabase();
-      if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows (Supabase fetch failed)."); }
-      else setMessage("Loaded rows from Supabase.");
-
+      const supRes = await fetchPageFromSupabase(page);
+      if (!supRes) {
+        fetchPageLocal(page);
+      }
+      // setup realtime: listen for any table changes and refetch current page
       try {
-        // unsubscribe existing if any
         if (realtimeRef.current && realtimeRef.current.unsubscribe) {
           await realtimeRef.current.unsubscribe().catch(()=>{});
           realtimeRef.current = null;
         }
-
-        // create a channel listening to all changes in participants table
+        // subscribe to all table changes and refetch current page when anything changes
         const channel = supabase
-          .channel('public:participants:admin')
+          .channel('public:participants:admin_paginated')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, payload => {
-            // simply refetch on any change (keeps logic simple and consistent)
-            fetchFromSupabase().catch(() => {});
+            // refetch current page when anything changes
+            fetchPageFromSupabase(page).catch(() => { fetchPageLocal(page); });
           });
-
-        const sub = await channel.subscribe();
+        await channel.subscribe();
         realtimeRef.current = channel;
       } catch (e) {
         console.warn('Admin realtime subscription failed', e);
       }
     })();
-
     return () => {
       if (realtimeRef.current && realtimeRef.current.unsubscribe) {
         realtimeRef.current.unsubscribe().catch(()=>{});
         realtimeRef.current = null;
       }
     };
-  }, [fetchFromSupabase, fetchRowsLocal]);
+  }, [fetchPageFromSupabase, fetchPageLocal, page]);
 
   // Approve deletion (keeps current behavior but tries to update supabase)
   async function approveDelete(reqRow) {
@@ -1100,7 +1143,7 @@ function AdminDashboard() {
         localStorage.setItem(LS_SUBMITTED_KEY(team), JSON.stringify(updated));
       } catch (e) { console.error(e); }
 
-      // update admin UI state
+      // update current page UI state
       setRows(prev => prev.map(r => ((reqRow.id && r.id && String(r.id) === String(reqRow.id)) || (!reqRow.id && r.timestamp === reqRow.timestamp)) ? { ...r, status: "Deleted" } : r));
 
       // notify team clients via event (team manager listens)
@@ -1113,12 +1156,11 @@ function AdminDashboard() {
     }
   }
 
-  // download photo helper: ensures server is checked if missing and then downloads
+  // download photo helper
   async function downloadPhoto(row) {
     try {
       setMessage("Preparing photo...");
 
-      // prefer server copy if id present (get latest)
       let photoB64 = row.photoBase64;
       if ((!photoB64 || photoB64 === "") && row.id) {
         const { data, error } = await supabase.from('participants').select('photo_base64').eq('id', row.id).single();
@@ -1134,14 +1176,11 @@ function AdminDashboard() {
         return;
       }
 
-      // if value is already a data URL, use it; if it's plain base64, assume JPEG
       let dataUrl = photoB64;
       if (!/^data:/i.test(photoB64)) {
-        // attempt to determine mime if possible (default jpeg)
         dataUrl = `data:image/jpeg;base64,${photoB64}`;
       }
 
-      // fetch converted blob and trigger download
       const res = await fetch(dataUrl);
       const blob = await res.blob();
       const ext = blob.type && blob.type.split('/')[1] ? blob.type.split('/')[1].split('+')[0] : 'jpg';
@@ -1163,10 +1202,10 @@ function AdminDashboard() {
     }
   }
 
-  // teams for filter dropdown
-  const teams = Array.from(new Set((rows || []).map(r => r.teamId))).sort();
+  // fixed list of teams
+  const teams = TEAM_CREDENTIALS.map(t => t.teamId);
 
-  // filter rows for display
+  // filtered = rows are already team-filtered server-side; still apply defensive filtering
   const filtered = (rows || []).filter(r => {
     if (teamFilter && r.teamId !== teamFilter) return false;
     if (statusFilter && r.status !== statusFilter) return false;
@@ -1177,7 +1216,7 @@ function AdminDashboard() {
     return true;
   });
 
-  // CSV export (unchanged)
+  // CSV export for current filtered page only
   function exportCSV() {
     const header = ['teamId','name','gender','age','designation','phone','blood','ageClass','vegNon','sports','photoBase64','timestamp','id','status'];
     const csvRows = [header, ...filtered.map(r => [ r.teamId, r.name, r.gender, r.age, r.designation, r.phone, r.blood, r.ageClass, r.vegNon, JSON.stringify(r.sports || []), r.photoBase64 ? '[BASE64]' : '', r.timestamp || '', r.id || '', r.status || '' ])];
@@ -1185,28 +1224,46 @@ function AdminDashboard() {
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.setAttribute("download", "chamba_registrations.csv");
+    link.setAttribute("download", `chamba_registrations_page_${page+1}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   }
+
+  // pagination controls
+  function goToFirst() { setPage(0); }
+  function goToPrev() { setPage(p => Math.max(0, p - 1)); }
+  function goToNext() { setPage(p => Math.min(totalPages - 1, p + 1)); }
+  function goToLast() { setPage(totalPages - 1); }
+  function jumpTo(n) { const v = Math.max(0, Math.min(totalPages - 1, n)); setPage(v); }
 
   return (
     <div className="panel admin-panel">
       <div className="panel-header">
         <h2>Admin Dashboard</h2>
         <div className="header-actions">
-          <button className="btn" onClick={async () => { const sup = await fetchFromSupabase(); if (!sup) { fetchRowsLocal(); setMessage("Loaded local rows"); } else setMessage("Loaded from Supabase"); }}>Load</button>
-          <button className="btn" onClick={exportCSV}>Download CSV</button>
+          <button className="btn" onClick={async () => { const sup = await fetchPageFromSupabase(page); if (!sup) { fetchPageLocal(page); setMessage("Loaded local rows"); } else setMessage("Loaded from Supabase"); }}>Load</button>
+          <button className="btn" onClick={exportCSV}>Download CSV (current page)</button>
         </div>
       </div>
 
       <div className="filters">
-        <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)}><option value="">All Teams</option>{teams.map(t => <option key={t} value={t}>{t}</option>)}</select>
+        {/* Team select: NO "All Teams" option; fixed 13 teams; default to first */}
+        <select value={teamFilter} onChange={e => { setTeamFilter(e.target.value); setPage(0); }}>
+          {teams.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
 
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">All Statuses</option><option value="Active">Active</option><option value="Requested">Requested</option><option value="Deleted">Deleted</option></select>
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(0); }}>
+          <option value="">All Statuses</option>
+          <option value="Active">Active</option>
+          <option value="Requested">Requested</option>
+          <option value="Deleted">Deleted</option>
+        </select>
 
-        <select value={sportFilter} onChange={e => setSportFilter(e.target.value)}><option value="">All Sports</option>{SPORTS.map(s => <option key={s} value={s}>{s}</option>)}</select>
+        <select value={sportFilter} onChange={e => { setSportFilter(e.target.value); setPage(0); }}>
+          <option value="">All Sports</option>
+          {SPORTS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
       </div>
 
       <div className="table-scroll">
@@ -1219,15 +1276,13 @@ function AdminDashboard() {
           <tbody>
             {filtered.map((r,i) => (
               <tr key={r.id || r.timestamp || i} className={r.status === "Deleted" ? "row-deleted" : ""}>
-                <td>{i+1}</td>
+                <td>{page * PAGE_SIZE + i + 1}</td>
                 <td>{r.teamId}</td>
                 <td>{r.name}</td>
                 <td>{r.gender}</td>
                 <td>{r.age}</td>
                 <td>{(r.sports || []).filter(Boolean).join(", ")}</td>
                 <td>{r.status || "Active"}</td>
-
-                {/* Photo column: thumbnail + Download button for Active participants */}
                 <td>
                   <div style={{ marginTop: 6 }}>
                     {r.status === "Active" ? (
@@ -1243,12 +1298,22 @@ function AdminDashboard() {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && <tr><td colSpan={10} className="muted">No rows</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={10} className="muted">No rows on this page.</td></tr>}
           </tbody>
         </table>
       </div>
 
-      {message && <div className="info-text">{message}</div>}
+      <div className="pagination-controls" style={{ display:'flex', alignItems:'center', gap:8, marginTop:10 }}>
+        <button className="btn" onClick={goToFirst} disabled={page === 0}>« First</button>
+        <button className="btn" onClick={goToPrev} disabled={page === 0}>‹ Prev</button>
+        <div className="muted">Page</div>
+        <input type="number" value={page+1} onChange={e => { const v = Number(e.target.value) || 1; jumpTo(v-1); }} style={{width:60}} />
+        <div className="muted">of {totalPages} ({totalCount} rows)</div>
+        <button className="btn" onClick={goToNext} disabled={page >= totalPages - 1}>Next ›</button>
+        <button className="btn" onClick={goToLast} disabled={page >= totalPages - 1}>Last »</button>
+      </div>
+
+      {message && <div className="info-text" style={{marginTop:8}}>{message}</div>}
     </div>
   );
 }
