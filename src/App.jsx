@@ -131,7 +131,7 @@
       ]);
       const womenOpenDisallowed = new Set(["Football", "Lawn Tennis"]);
       // women_vet: allow mixed doubles for both badminton and table tennis as requested
-      const womenVetAllowed = new Set(["800 m walking", "Quiz", "10k Marathon", "Badminton (Mixed Doubles)", "Table Tennis (Mix Doubles)"]);
+      const womenVetAllowed = new Set(["400 m walking", "Quiz", "10k Marathon", "Badminton (Mixed Doubles)", "Table Tennis (Mix Doubles)"]);
 
       if (gender === "Male") {
         if (ageClass === "men_open") return SPORTS.filter(s => !menOpenDisallowed.has(s));
