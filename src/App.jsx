@@ -989,7 +989,7 @@ function AdminDashboard() {
   const realtimeRef = useRef(null);
 
   // pagination states
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 70;
   const [page, setPage] = useState(0); // zero-based
   const [totalCount, setTotalCount] = useState(0);
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -1117,6 +1117,8 @@ function AdminDashboard() {
       }
     };
   }, [fetchPageFromSupabase, fetchPageLocal, page]);
+
+
 
   // Approve deletion (keeps current behavior but tries to update supabase)
   async function approveDelete(reqRow) {
