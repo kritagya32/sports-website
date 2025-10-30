@@ -17,19 +17,19 @@
 
     // -------------------- Constants --------------------
     const TEAM_CREDENTIALS = [
-      { teamId: "Chamba", username: "chamba", password: "Ch@mba2025" },
-      { teamId: "Dharamshala", username: "dharamshala", password: "Dhar@2025" },
-      { teamId: "Mandi", username: "mandi", password: "M@ndi2025" },
-      { teamId: "Solan", username: "solan", password: "S0lan2025" },
-      { teamId: "Hamirpur", username: "hamirpur", password: "HamiR2025" },
-      { teamId: "Bilaspur", username: "bilaspur", password: "BilaP2025" },
-      { teamId: "Nahan", username: "nahan", password: "Nahan2025#" },
-      { teamId: "Wildlife", username: "wildlife", password: "Wild2025!" },
-      { teamId: "Kullu", username: "kullu", password: "Kullu2025#" },
-      { teamId: "Rampur", username: "rampur", password: "Rampur2025" },
-      { teamId: "Shimla", username: "shimla", password: "Shimla2025" },
-      { teamId: "HPSFDC", username: "hpsfdc", password: "HPSFDC2025" },
-      { teamId: "Direction", username: "direction", password: "Direct2025" }
+      { teamId: "Chamba", username: "chamba", password: "Ch@mba20251" },
+      { teamId: "Dharamshala", username: "dharamshala", password: "Dhar@20251" },
+      { teamId: "Mandi", username: "mandi", password: "M@ndi20251" },
+      { teamId: "Solan", username: "solan", password: "S0lan20251" },
+      { teamId: "Hamirpur", username: "hamirpur", password: "HamiR20251" },
+      { teamId: "Bilaspur", username: "bilaspur", password: "BilaP20251" },
+      { teamId: "Nahan", username: "nahan", password: "Nahan2025#1" },
+      { teamId: "Wildlife", username: "wildlife", password: "Wild2025!1" },
+      { teamId: "Kullu", username: "kullu", password: "Kullu2025#1" },
+      { teamId: "Rampur", username: "rampur", password: "Rampur20251" },
+      { teamId: "Shimla", username: "shimla", password: "Shimla20251" },
+      { teamId: "HPSFDC", username: "hpsfdc", password: "HPSFDC20251" },
+      { teamId: "Direction", username: "direction", password: "Direct20251" }
     ];
 
     const ADMIN_CREDENTIALS = [
@@ -980,19 +980,30 @@
 // -------------------- Admin Dashboard (pagination & team-scoped fetch) --------------------
 function AdminDashboard() {
   const [rows, setRows] = useState([]); // current page rows
-  // default to first team in TEAM_CREDENTIALS so admin always sees one team at a time
-  const defaultTeam = TEAM_CREDENTIALS[0] && TEAM_CREDENTIALS[0].teamId ? TEAM_CREDENTIALS[0].teamId : "";
+
+  // default to All Teams now (empty string) so admin can select All Teams
+  const defaultTeam = "";
   const [teamFilter, setTeamFilter] = useState(defaultTeam);
   const [statusFilter, setStatusFilter] = useState("");
   const [sportFilter, setSportFilter] = useState("");
+  const [ageClassFilter, setAgeClassFilter] = useState(""); // NEW: age-class filter
   const [message, setMessage] = useState("");
   const realtimeRef = useRef(null);
 
   // pagination states
-  const PAGE_SIZE = 70;
+  const PAGE_SIZE = 80;
   const [page, setPage] = useState(0); // zero-based
   const [totalCount, setTotalCount] = useState(0);
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  // Flatten age-class options (id + label) from AGE_CLASSES_MASTER
+  const AGE_CLASS_OPTIONS = [
+    ...(AGE_CLASSES_MASTER.Male || []),
+    ...(AGE_CLASSES_MASTER.Female || [])
+  ];
+
+  // fixed list of teams
+  const teams = TEAM_CREDENTIALS.map(t => t.teamId);
 
   // builds a supabase query with filters applied
   const buildQuery = useCallback(() => {
@@ -1004,8 +1015,12 @@ function AdminDashboard() {
       // stored as array; use contains
       query = query.contains('sports', [sportFilter]);
     }
+    if (ageClassFilter) {
+      // age_class stored in DB (use equality)
+      query = query.eq('age_class', ageClassFilter);
+    }
     return query;
-  }, [teamFilter, statusFilter, sportFilter]);
+  }, [teamFilter, statusFilter, sportFilter, ageClassFilter]);
 
   // fetch page from supabase using range
   const fetchPageFromSupabase = useCallback(async (pageToFetch = page) => {
@@ -1054,13 +1069,16 @@ function AdminDashboard() {
           if (Array.isArray(s)) s.forEach(r => all.push({ ...r, teamId: t.teamId }));
         } catch (e) { /* ignore */ }
       });
-      // apply filters
+      // apply filters (including ageClassFilter)
       const filtered = all.filter(r => {
         if (teamFilter && r.teamId !== teamFilter) return false;
         if (statusFilter && r.status !== statusFilter) return false;
         if (sportFilter && sportFilter !== "") {
           const s = r.sports || [];
           if (!s.includes(sportFilter)) return false;
+        }
+        if (ageClassFilter && ageClassFilter !== "") {
+          if ((r.ageClass || r.age_class || "") !== ageClassFilter) return false;
         }
         return true;
       });
@@ -1077,12 +1095,12 @@ function AdminDashboard() {
       setTotalCount(0);
       return [];
     }
-  }, [teamFilter, statusFilter, sportFilter, page]);
+  }, [teamFilter, statusFilter, sportFilter, ageClassFilter, page]);
 
   // whenever filters change, reset to page 0
   useEffect(() => {
     setPage(0);
-  }, [teamFilter, statusFilter, sportFilter]);
+  }, [teamFilter, statusFilter, sportFilter, ageClassFilter]);
 
   useEffect(() => {
     let mounted = true;
@@ -1117,8 +1135,6 @@ function AdminDashboard() {
       }
     };
   }, [fetchPageFromSupabase, fetchPageLocal, page]);
-
-
 
   // Approve deletion (keeps current behavior but tries to update supabase)
   async function approveDelete(reqRow) {
@@ -1204,9 +1220,6 @@ function AdminDashboard() {
     }
   }
 
-  // fixed list of teams
-  const teams = TEAM_CREDENTIALS.map(t => t.teamId);
-
   // filtered = rows are already team-filtered server-side; still apply defensive filtering
   const filtered = (rows || []).filter(r => {
     if (teamFilter && r.teamId !== teamFilter) return false;
@@ -1214,6 +1227,9 @@ function AdminDashboard() {
     if (sportFilter && sportFilter !== "") {
       const s = r.sports || [];
       if (!s.includes(sportFilter)) return false;
+    }
+    if (ageClassFilter && ageClassFilter !== "") {
+      if ((r.ageClass || r.age_class || "") !== ageClassFilter) return false;
     }
     return true;
   });
@@ -1250,9 +1266,15 @@ function AdminDashboard() {
       </div>
 
       <div className="filters">
-        {/* Team select: NO "All Teams" option; fixed 13 teams; default to first */}
+        {/* Team select: now includes "All Teams" option */}
         <select value={teamFilter} onChange={e => { setTeamFilter(e.target.value); setPage(0); }}>
+          <option value="">All Teams</option>
           {teams.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <select value={ageClassFilter} onChange={e => { setAgeClassFilter(e.target.value); setPage(0); }}>
+          <option value="">All Age Classes</option>
+          {AGE_CLASS_OPTIONS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
         </select>
 
         <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(0); }}>
@@ -1272,7 +1294,7 @@ function AdminDashboard() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>#</th><th>Team</th><th>Name</th><th>Gender</th><th>Age</th><th>Sports</th><th>Status</th><th>Photo</th><th>ID</th><th>Action</th>
+              <th>#</th><th>Team</th><th>Name</th><th>Gender</th><th>Age</th><th>Sports</th><th>Age Class</th><th>Status</th><th>Photo</th><th>ID</th><th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -1284,6 +1306,7 @@ function AdminDashboard() {
                 <td>{r.gender}</td>
                 <td>{r.age}</td>
                 <td>{(r.sports || []).filter(Boolean).join(", ")}</td>
+                <td>{(r.ageClass || r.age_class || "").toString().replace(/_/g, ' ')}</td>
                 <td>{r.status || "Active"}</td>
                 <td>
                   <div style={{ marginTop: 6 }}>
@@ -1300,7 +1323,7 @@ function AdminDashboard() {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && <tr><td colSpan={10} className="muted">No rows on this page.</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={11} className="muted">No rows on this page.</td></tr>}
           </tbody>
         </table>
       </div>
